@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+local.properties
+.gradle/
+.kotlin/
+.idea/
+**/build/
+*.jks
+*.keystore
+*.hprof
+captures/
+.signing.properties
+artifacts/
