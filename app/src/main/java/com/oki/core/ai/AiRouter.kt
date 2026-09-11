@@ -9,7 +9,11 @@ import kotlinx.serialization.json.*
 
 const val GROQ_PRIMARY = "openai/gpt-oss-120b"
 const val GROQ_FALLBACK = "openai/gpt-oss-20b"
-const val GEMINI_MODEL = "gemini-3.7-flash"
+const val GEMINI_PRIMARY = "gemini-3.5-flash"
+const val GEMINI_FALLBACK = "gemini-3.5-flash-lite"
+const val GEMINI_MODEL = GEMINI_PRIMARY
+val GEMINI_VISION_MODELS =
+    listOf(GEMINI_PRIMARY, GEMINI_FALLBACK, "gemini-3.1-flash-lite", "gemini-3.7-flash")
 val aiJson = Json {
     ignoreUnknownKeys = true
     explicitNulls = false

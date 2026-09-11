@@ -65,11 +65,17 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
     fun test(provider: Provider) = action {
         diagnostic.value = "Testing ${provider.name.lowercase()}…"
         if (provider == Provider.GEMINI) {
-            try {
-                c.gemini.test()
-                diagnostic.value = "$GEMINI_MODEL: Passed"
-            } catch (e: Exception) {
-                diagnostic.value = "$GEMINI_MODEL: Failed — ${friendlyError(e)}"
+            val results = mutableListOf<String>()
+            for ((label, model) in
+                listOf("Primary" to GEMINI_PRIMARY, "Fallback" to GEMINI_FALLBACK)) {
+                try {
+                    c.gemini.test(model)
+                    results += "$label ($model): Passed"
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    results += "$label ($model): Failed — ${friendlyError(e)}"
+                }
+                diagnostic.value = results.joinToString("\n\n")
             }
         } else {
             val results = mutableListOf<String>()

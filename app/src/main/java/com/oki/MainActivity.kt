@@ -125,7 +125,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
         scope.launch {
             pager.animateScrollToPage(
                 tabs.indexOf(destination),
-                animationSpec = tween(420, easing = FastOutSlowInEasing),
+                animationSpec = tween(250, easing = FastOutSlowInEasing),
             )
         }
     }
@@ -216,16 +216,18 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             startDestination = "home",
             modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
             enterTransition = {
-                slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it }
+                slideInHorizontally(tween(220, easing = FastOutSlowInEasing)) { it }
             },
             exitTransition = {
-                slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 4 }
+                // Keep the old screen completely stationary underneath
+                slideOutHorizontally(tween(220)) { 0 }
             },
             popEnterTransition = {
-                slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 4 }
+                // Keep the old screen (now becoming visible again) completely stationary underneath
+                slideInHorizontally(tween(220)) { 0 }
             },
             popExitTransition = {
-                slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it }
+                slideOutHorizontally(tween(220, easing = FastOutSlowInEasing)) { it }
             },
         ) {
             composable("home") {
@@ -233,7 +235,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                     state = pager,
                     modifier = Modifier.fillMaxSize().testTag("main-pager"),
                     key = { tabs[it] },
-                    beyondViewportPageCount = 0,
+                    beyondViewportPageCount = 1,
                 ) { page ->
                     when (page) {
                         0 -> TasksScreen(tasks) { editor(false, it) }

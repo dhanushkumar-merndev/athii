@@ -150,4 +150,55 @@ class AiRouterTest {
         AiRouter(fake).complete(messages, messages)
         assertEquals(GROQ_FALLBACK, fake.calls.last().first)
     }
+
+    private class FakeGeminiTransport(private val results: MutableList<Any>) : GeminiTransport {
+        val calls = mutableListOf<String>()
+
+        override suspend fun generate(model: String, parts: JsonArray, schema: JsonObject): String {
+            calls += model
+            val result = results.removeAt(0)
+            if (result is Exception) throw result
+            return result as String
+        }
+    }
+
+    @Test
+    fun geminiPrimarySuccessDoesNotFallback() = runTest {
+        val json = """{"drafts":[{"title":"Scan Task"}]}"""
+        val fake = FakeGeminiTransport(mutableListOf(json))
+        val client = GeminiVisionClient(transport = fake)
+        val drafts = client.extract(ByteArray(0), false)
+        assertEquals(1, drafts.size)
+        assertEquals(listOf(GEMINI_PRIMARY), fake.calls)
+    }
+
+    @Test
+    fun geminiServiceUnavailableFallsBack() = runTest {
+        val json = """{"drafts":[{"title":"Scan Task"}]}"""
+        val fake = FakeGeminiTransport(mutableListOf(ApiFailure(503), json))
+        val client = GeminiVisionClient(transport = fake)
+        val drafts = client.extract(ByteArray(0), false)
+        assertEquals(1, drafts.size)
+        assertEquals(listOf(GEMINI_PRIMARY, GEMINI_FALLBACK), fake.calls)
+    }
+
+    @Test
+    fun geminiRateLimitFallsBack() = runTest {
+        val json = """{"drafts":[{"title":"Scan Task"}]}"""
+        val fake = FakeGeminiTransport(mutableListOf(ApiFailure(429), json))
+        val client = GeminiVisionClient(transport = fake)
+        val drafts = client.extract(ByteArray(0), false)
+        assertEquals(1, drafts.size)
+        assertEquals(listOf(GEMINI_PRIMARY, GEMINI_FALLBACK), fake.calls)
+    }
+
+    @Test
+    fun geminiAuthFailureDoesNotFallback() = runTest {
+        val fake = FakeGeminiTransport(mutableListOf(ApiFailure(401)))
+        val client = GeminiVisionClient(transport = fake)
+        assertTrue(
+            runCatching { client.extract(ByteArray(0), false) }.exceptionOrNull() is ApiFailure
+        )
+        assertEquals(1, fake.calls.size)
+    }
 }

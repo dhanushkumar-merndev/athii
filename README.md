@@ -41,7 +41,7 @@ This script explicitly targets the emulator, never another connected device. Tes
 
 Enter your own credentials in **Settings → AI Configuration**:
 
-- Gemini image extraction: `gemini-3.7-flash`
+- Gemini image extraction: `gemini-3.5-flash` (fallback: `gemini-3.5-flash-lite`)
 - Groq primary: `openai/gpt-oss-120b`
 - Groq fallback: `openai/gpt-oss-20b`
 

@@ -86,22 +86,14 @@ fun DoctorsScreen(vm: DoctorsViewModel, details: (String) -> Unit) {
             )
         }
         item {
-            Column {
-                OutlinedTextField(
-                    query,
-                    { query = it },
-                    Modifier.fillMaxWidth(),
+                InlineAutocompleteField(
+                    value = query,
+                    change = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
                     placeholder = { Text("Search name, department, clinic") },
                     leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                    shape = RoundedCornerShape(18.dp),
-                    singleLine = true,
-                )
-                InlineAutocompleteSuggestions(
-                    value = query,
                     suggestions = searchSuggestions,
-                    select = { query = it },
                 )
-            }
         }
         item {
             DoctorFiltersRow(

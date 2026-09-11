@@ -101,19 +101,13 @@ fun TasksScreen(vm: TasksViewModel, edit: (String) -> Unit) {
             }
             item {
                 Column {
-                    OutlinedTextField(
-                        query,
-                        { query = it },
-                        Modifier.fillMaxWidth(),
+                    InlineAutocompleteField(
+                        value = query,
+                        change = { query = it },
+                        modifier = Modifier.fillMaxWidth(),
                         placeholder = { Text("Search tasks") },
                         leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp),
-                    )
-                    InlineAutocompleteSuggestions(
-                        value = query,
                         suggestions = searchSuggestions,
-                        select = { query = it },
                     )
                 }
             }

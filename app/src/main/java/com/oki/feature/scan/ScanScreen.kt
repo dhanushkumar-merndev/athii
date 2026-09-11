@@ -107,7 +107,7 @@ fun ScanScreen(
     doctor: Boolean,
     review: (String) -> Unit,
     manual: () -> Unit,
-    settings: () -> Unit,
+    settings: () -> Unit = {},
 ) {
     val path by vm.path.collectAsStateWithLifecycle()
     val drafts by vm.drafts.collectAsStateWithLifecycle()
@@ -161,7 +161,10 @@ fun ScanScreen(
             )
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 OutlinedButton(
                     onClick = {
                         if (
@@ -174,6 +177,7 @@ fun ScanScreen(
                         else permission.launch(Manifest.permission.CAMERA)
                     },
                     enabled = !scanning && !busy,
+                    modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Outlined.PhotoCamera, null)
                     Spacer(Modifier.width(8.dp))
@@ -188,6 +192,7 @@ fun ScanScreen(
                         )
                     },
                     enabled = !scanning && !busy,
+                    modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Outlined.PhotoLibrary, null)
                     Spacer(Modifier.width(8.dp))
@@ -246,9 +251,6 @@ fun ScanScreen(
         item {
             TextButton(onClick = manual, modifier = Modifier.fillMaxWidth()) {
                 Text("Enter manually")
-            }
-            TextButton(onClick = settings, modifier = Modifier.fillMaxWidth()) {
-                Text("AI key settings")
             }
         }
     }
