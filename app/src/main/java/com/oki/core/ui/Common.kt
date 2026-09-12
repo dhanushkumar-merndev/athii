@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oki.core.ai.friendlyError
+import com.oki.core.security.DeletionApproval
+import com.oki.core.security.rememberDeletionAuthenticator
 import java.time.*
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
@@ -130,22 +132,71 @@ fun ErrorBanner(message: String?) {
 
 @Composable
 fun ConfirmDelete(title: String, text: String, dismiss: () -> Unit, confirm: () -> Unit) {
+    val authenticator = rememberDeletionAuthenticator()
+    val approval = remember(title, text) { DeletionApproval() }
+    var verifying by remember(title, text) { mutableStateOf(false) }
+    var verificationError by remember(title, text) { mutableStateOf<String?>(null) }
+    DisposableEffect(approval, authenticator) {
+        onDispose {
+            approval.cancel()
+            authenticator.cancel()
+        }
+    }
+    fun cancel() {
+        approval.cancel()
+        authenticator.cancel()
+        dismiss()
+    }
     AlertDialog(
-        onDismissRequest = dismiss,
+        onDismissRequest = ::cancel,
         icon = { Icon(Icons.Outlined.DeleteOutline, null) },
         title = { Text(title) },
-        text = { Text(text) },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    dismiss()
-                    confirm()
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(text)
+                Text("Phone verification required.", style = MaterialTheme.typography.bodySmall)
+                verificationError?.let {
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
-            ) {
-                Text("Delete", color = MaterialTheme.colorScheme.error)
             }
         },
-        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
+        confirmButton = {
+            TextButton(
+                enabled = !verifying,
+                onClick = {
+                    val request =
+                        approval.begin {
+                            dismiss()
+                            confirm()
+                        }
+                    if (request != null) {
+                        verifying = true
+                        verificationError = null
+                        authenticator.authenticate(title) { success, error ->
+                            if (approval.isPending(request)) {
+                                verifying = false
+                                if (success) approval.approve(request)
+                                else {
+                                    approval.cancel()
+                                    verificationError =
+                                        error ?: "Verification canceled. Nothing was deleted."
+                                }
+                            }
+                        }
+                    }
+                },
+            ) {
+                Text(
+                    if (verifying) "Verifying…" else "Verify & delete",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        dismissButton = { TextButton(onClick = ::cancel) { Text("Cancel") } },
     )
 }
 

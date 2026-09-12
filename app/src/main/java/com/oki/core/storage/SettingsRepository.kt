@@ -86,11 +86,6 @@ class SettingsRepository(context: Context) {
                 )
             }
 
-    suspend fun setOffset(value: Int) {
-        require(value in 0..525600)
-        store.edit { it[offset] = value }
-    }
-
     suspend fun setSound(mode: SoundMode, soundUri: String = "") {
         store.edit {
             it[sound] = mode.name

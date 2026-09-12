@@ -26,23 +26,27 @@ object ChannelIdentity {
             "%02x".format(it)
         }
 
-    fun forSettings(settings: Settings): String =
+    /**
+     * [bypassAllowed] is the *effective* bypass, not the preference: Android drops the flag when
+     * the app has no Do Not Disturb access, and a channel's bypass is immutable once created.
+     * Keying the id on the effective value means granting access later produces a new channel that
+     * actually bypasses, instead of silently reusing a muted one.
+     */
+    fun forSettings(settings: Settings, bypassAllowed: Boolean = false): String =
         when (settings.soundMode) {
             SoundMode.SYSTEM -> "reminders_default_v1"
             SoundMode.SILENT -> "reminders_silent_v1"
             SoundMode.CUSTOM -> "reminders_custom_" + fingerprint(settings.customSoundUri)
-        } +
-            // Do Not Disturb bypass is fixed at creation, so it has to be part of the identity.
-            if (settings.bypassDnd) "_dnd" else ""
+        } + if (bypassAllowed) "_dnd" else ""
 
     /**
      * A channel's sound is immutable once Android creates it, so the chosen alarm tone has to be
      * part of the channel id or switching tones would silently keep the old one.
      */
-    fun forAlarm(soundUri: Uri?, bypassDnd: Boolean = false): String =
+    fun forAlarm(soundUri: Uri?, bypassAllowed: Boolean = false): String =
         NotificationPublisher.ALARM_CHANNEL_PREFIX +
             fingerprint(soundUri?.toString().orEmpty()) +
-            if (bypassDnd) "_dnd" else ""
+            if (bypassAllowed) "_dnd" else ""
 
     fun notificationTag(taskId: String, kind: TaskNotificationKind = TaskNotificationKind.START) =
         "task:$taskId" + if (kind == TaskNotificationKind.END) ":end" else ""
@@ -89,9 +93,13 @@ class NotificationPublisher(private val context: Context) {
     /** Android ignores a bypass request unless the user has granted Do Not Disturb access. */
     fun canBypassDnd(): Boolean = manager.isNotificationPolicyAccessGranted
 
+    /** The preference only takes effect once the user has granted Do Not Disturb access. */
+    private fun effectiveBypass(settings: Settings) = settings.bypassDnd && canBypassDnd()
+
     fun alarmChannel(settings: Settings): String {
         val uri = alarmSoundUri(settings)
-        val id = ChannelIdentity.forAlarm(uri, settings.bypassDnd)
+        val bypass = effectiveBypass(settings)
+        val id = ChannelIdentity.forAlarm(uri, bypass)
         manager.createNotificationChannel(
             NotificationChannel(id, "Task alarms", NotificationManager.IMPORTANCE_HIGH).apply {
                 description =
@@ -104,7 +112,7 @@ class NotificationPublisher(private val context: Context) {
                         .build(),
                 )
                 enableVibration(true)
-                setBypassDnd(settings.bypassDnd && canBypassDnd())
+                setBypassDnd(bypass)
             }
         )
         // A channel per tone would otherwise pile up in Android's notification settings.
@@ -129,7 +137,8 @@ class NotificationPublisher(private val context: Context) {
                 ) == PackageManager.PERMISSION_GRANTED)
 
     fun channel(settings: Settings): String {
-        val id = ChannelIdentity.forSettings(settings)
+        val bypass = effectiveBypass(settings)
+        val id = ChannelIdentity.forSettings(settings, bypass)
         val uri =
             when (settings.soundMode) {
                 SoundMode.SYSTEM -> AndroidSettings.System.DEFAULT_NOTIFICATION_URI
@@ -165,7 +174,7 @@ class NotificationPublisher(private val context: Context) {
                             .build(),
                     )
                     enableVibration(settings.soundMode != SoundMode.SILENT)
-                    setBypassDnd(settings.bypassDnd && canBypassDnd())
+                    setBypassDnd(bypass)
                 }
         )
         return id

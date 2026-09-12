@@ -31,7 +31,6 @@ import com.oki.core.ai.*
 import com.oki.core.security.Provider
 import com.oki.core.storage.*
 import com.oki.core.ui.*
-import com.oki.feature.tasks.TaskEditorViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -114,11 +113,6 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
         c.publisher.channel(c.settings.settings.first())
     }
 
-    fun offset(value: String) = action {
-        val parsed = value.toIntOrNull() ?: error("Enter a whole number of minutes.")
-        c.settings.setOffset(parsed)
-    }
-
     fun alarmSound(mode: AlarmSound, uri: String = "") = action {
         c.settings.setAlarmSound(mode, uri)
         // Recreate the channel now so the next alarm rings with the tone just chosen.
@@ -127,6 +121,17 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
 
     fun previewAlarm() = action {
         c.publisher.alarmSoundUri(c.settings.settings.first())?.let { c.sounds.preview(it, true) }
+    }
+
+    /** Re-creates channels so a newly granted Do Not Disturb access takes effect immediately. */
+    fun refreshChannels() {
+        viewModelScope.launch {
+            runCatching {
+                val current = c.settings.settings.first()
+                c.publisher.channel(current)
+                c.publisher.alarmChannel(current)
+            }
+        }
     }
 
     fun bypassDnd(value: Boolean) = action {
@@ -211,21 +216,23 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
         notifications = vm.c.publisher.canNotify()
         batteryExempt = vm.c.publisher.ignoresBatteryOptimizations()
         dndAccess = vm.c.publisher.canBypassDnd()
+        vm.refreshChannels()
         fullScreenAlarms =
             Build.VERSION.SDK_INT < 34 || notificationManager.canUseFullScreenIntent()
         onPauseOrDispose { vm.c.sounds.stop() }
     }
-    fun openBatterySettings() {
-        // The direct request is what actually removes the restriction; the list is the fallback.
-        val direct =
+    fun openBatterySettings(exempt: Boolean) {
+        // The request dialog only appears while the app is still restricted; once it is exempt
+        // Android finishes it immediately with no UI, so send the user to the list instead.
+        val request =
             Intent(
                     AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                     Uri.parse("package:${context.packageName}"),
                 )
-                .takeIf { it.resolveActivity(context.packageManager) != null }
-        context.startActivity(
-            direct ?: Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-        )
+                .takeIf { !exempt }
+        val list = Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        val target = (request ?: list).takeIf { it.resolveActivity(context.packageManager) != null }
+        runCatching { context.startActivity(target ?: list) }
     }
     fun openNotificationSettings() {
         context.startActivity(
@@ -340,7 +347,7 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
                     else "Battery saver may stop alarms once you close Athii",
                     if (batteryExempt) "Manage" else "Fix",
                 ) {
-                    openBatterySettings()
+                    openBatterySettings(batteryExempt)
                 }
                 Text(
                     "Alarms and reminders are scheduled by Android, so they fire with Athii closed — " +
@@ -356,25 +363,6 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Send test notification")
-                }
-            }
-        }
-        item {
-            SettingsCard("Default reminder lead time", Icons.Outlined.Timer) {
-                Text(
-                    "Used when you create a task. Every task can still choose its own lead time.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TaskEditorViewModel.OFFSET_PRESETS.forEach { option ->
-                        FilterChip(
-                            selected = settings.defaultOffset == option,
-                            onClick = { vm.offset(option.toString()) },
-                            label = { Text(if (option == 0) "At time" else "$option min") },
-                            enabled = !busy,
-                        )
-                    }
                 }
             }
         }
