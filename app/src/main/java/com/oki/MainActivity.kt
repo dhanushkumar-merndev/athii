@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -36,6 +37,7 @@ import com.oki.feature.doctors.*
 import com.oki.feature.scan.*
 import com.oki.feature.settings.*
 import com.oki.feature.tasks.*
+import com.oki.feature.tutorial.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -91,6 +93,54 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
         viewModel(factory = viewModelFactory { initializer { AssistantViewModel(c) } })
     val settings: SettingsViewModel =
         viewModel(factory = viewModelFactory { initializer { SettingsViewModel(c) } })
+    val tutorial: TutorialViewModel =
+        viewModel(
+            factory =
+                viewModelFactory { initializer { TutorialViewModel(c, createSavedStateHandle()) } }
+        )
+    val tourActive by tutorial.isTourActive.collectAsStateWithLifecycle()
+    val tourStep by tutorial.currentStep.collectAsStateWithLifecycle()
+    val tourIndex by tutorial.currentStepIndex.collectAsStateWithLifecycle()
+    val tourNavRequest by tutorial.pendingNavigation.collectAsStateWithLifecycle()
+    val tourShowSkip by tutorial.showSkipConfirm.collectAsStateWithLifecycle()
+    // Start tour on first launch.
+    LaunchedEffect(Unit) { tutorial.startTourIfNeeded() }
+    // Handle tutorial navigation requests.
+    LaunchedEffect(tourNavRequest) {
+        val request = tourNavRequest ?: return@LaunchedEffect
+        tutorial.consumeNavigation()
+        when (request.route) {
+            "home/tasks" -> {
+                if (destinationRoute != "home") nav.popBackStack("home", false)
+                scope.launch {
+                    pager.animateScrollToPage(
+                        0,
+                        animationSpec = tween(250, easing = FastOutSlowInEasing),
+                    )
+                }
+            }
+            "home/doctors" -> {
+                if (destinationRoute != "home") nav.popBackStack("home", false)
+                scope.launch {
+                    pager.animateScrollToPage(
+                        1,
+                        animationSpec = tween(250, easing = FastOutSlowInEasing),
+                    )
+                }
+            }
+            "settings" -> {
+                if (destinationRoute != "settings")
+                    nav.navigate("settings") { launchSingleTop = true }
+            }
+            "doctor_detail" -> {
+                // Navigate to first doctor if one exists.
+                val allDoctors = doctors.doctors.value
+                val firstId = allDoctors?.firstOrNull()?.id
+                if (firstId != null && !destinationRoute.startsWith("doctor/"))
+                    nav.navigate("doctor/$firstId")
+            }
+        }
+    }
     var add by remember { mutableStateOf(false) }
     val addSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var closingAddSheet by remember { mutableStateOf(false) }
@@ -109,6 +159,23 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             }
         }
     }
+    // First run: collect every permission reminders depend on, rather than leaving the user to
+    // find them in Settings. Shown only while something essential is missing.
+    val storedSettings by c.settings.settings.collectAsStateWithLifecycle(null)
+    var setupDismissed by rememberSaveable { mutableStateOf(false) }
+    val setupNeeded =
+        storedSettings?.let {
+            !it.setupPromptDismissed &&
+                !setupDismissed &&
+                (!c.publisher.canNotify() ||
+                    !c.reminders.hasExactAccess() ||
+                    !c.publisher.ignoresBatteryOptimizations())
+        } == true
+    if (setupNeeded)
+        PermissionSetupSheet(c) {
+            setupDismissed = true
+            scope.launch { c.settings.setSetupPromptDismissed(true) }
+        }
     LifecycleResumeEffect(Unit) {
         val job =
             scope.launch {
@@ -195,7 +262,8 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                             }
                         }
                         IconButton(
-                            onClick = { nav.navigate("settings") { launchSingleTop = true } }
+                            onClick = { nav.navigate("settings") { launchSingleTop = true } },
+                            modifier = Modifier.tutorialTarget("settings_icon", c.tutorialTargets),
                         ) {
                             Icon(Icons.Outlined.Settings, "Settings")
                         }
@@ -211,6 +279,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                                 },
                                 containerColor = MaterialTheme.colorScheme.primary,
                                 contentColor = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.tutorialTarget("add_fab", c.tutorialTargets),
                             )
                     },
                 ) {
@@ -221,8 +290,13 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                         beyondViewportPageCount = 1,
                     ) { page ->
                         when (page) {
-                            0 -> TasksScreen(tasks) { editor(false, it) }
-                            1 -> DoctorsScreen(doctors) { nav.navigate("doctor/$it") }
+                            0 -> TasksScreen(tasks, c.tutorialTargets) { editor(false, it) }
+                            1 ->
+                                DoctorsScreen(
+                                    doctors,
+                                    { nav.navigate("doctor/$it") },
+                                    c.tutorialTargets,
+                                )
                             2 ->
                                 AssistantScreen(
                                     assistant,
@@ -250,7 +324,16 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             }
             composable("settings") {
                 AthiiScreenFrame("Settings", { nav.popBackStack() }) {
-                    SettingsScreen(settings, assistant::clear, { nav.popBackStack("home", false) })
+                    SettingsScreen(
+                        settings,
+                        assistant::clear,
+                        { nav.popBackStack("home", false) },
+                        replayTour = {
+                            nav.popBackStack("home", false)
+                            tutorial.replayTour()
+                        },
+                        tutorialTargets = c.tutorialTargets,
+                    )
                 }
             }
             composable("doctor/{id}") { back ->
@@ -260,6 +343,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                         doctors,
                         { editor(true, back.arguments!!.getString("id")) },
                         { nav.popBackStack() },
+                        tutorialTargets = c.tutorialTargets,
                     )
                 }
             }
@@ -386,6 +470,26 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                     )
                 }
             }
+        }
+    }
+    // Tutorial overlay — drawn above everything.
+    if (tourActive) {
+        tourStep?.let { step ->
+            TutorialOverlay(
+                step = step,
+                stepIndex = tourIndex,
+                totalSteps = tutorial.totalSteps,
+                registry = c.tutorialTargets,
+                onNext = tutorial::next,
+                onPrevious = tutorial::previous,
+                onSkip = tutorial::requestSkip,
+                onFinish = tutorial::finish,
+                onStartTour = tutorial::next,
+                showSkipConfirm = tourShowSkip,
+                onConfirmSkip = tutorial::confirmSkip,
+                onCancelSkip = tutorial::cancelSkip,
+                onTargetUnavailable = tutorial::skipUnavailableTarget,
+            )
         }
     }
     if (add)

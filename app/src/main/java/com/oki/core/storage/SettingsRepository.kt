@@ -51,6 +51,8 @@ data class Settings(
     val autoDeleteCompleted: AutoDeleteCompleted = AutoDeleteCompleted.NEVER,
     /** Off by default: alerts stay quiet during Do Not Disturb unless explicitly allowed. */
     val bypassDnd: Boolean = false,
+    /** Set once the first-run permission sheet has been completed or dismissed. */
+    val setupPromptDismissed: Boolean = false,
 )
 
 class SettingsRepository(context: Context) {
@@ -64,6 +66,7 @@ class SettingsRepository(context: Context) {
     private val alarmUri = stringPreferencesKey("alarm_sound_uri")
     private val autoDelete = stringPreferencesKey("auto_delete_completed")
     private val dnd = booleanPreferencesKey("bypass_dnd")
+    private val setupSeen = booleanPreferencesKey("setup_prompt_dismissed")
     val settings: Flow<Settings> =
         store.data
             .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
@@ -83,6 +86,7 @@ class SettingsRepository(context: Context) {
                     runCatching { AutoDeleteCompleted.valueOf(it[autoDelete] ?: "NEVER") }
                         .getOrDefault(AutoDeleteCompleted.NEVER),
                     it[dnd] ?: false,
+                    it[setupSeen] ?: false,
                 )
             }
 
@@ -98,6 +102,10 @@ class SettingsRepository(context: Context) {
             it[alarmSound] = mode.name
             it[alarmUri] = soundUri
         }
+    }
+
+    suspend fun setSetupPromptDismissed(value: Boolean) {
+        store.edit { it[setupSeen] = value }
     }
 
     suspend fun setBypassDnd(value: Boolean) {

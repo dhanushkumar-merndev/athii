@@ -23,10 +23,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oki.core.storage.*
 import com.oki.core.ui.*
 import com.oki.feature.tasks.SuggestionCard
+import com.oki.feature.tutorial.TutorialTargetRegistry
+import com.oki.feature.tutorial.tutorialTarget
 import java.time.DayOfWeek
 
 @Composable
-fun AttendanceChip(doctor: Doctor, change: () -> Unit) {
+fun AttendanceChip(
+    doctor: Doctor,
+    tutorialTargets: TutorialTargetRegistry? = null,
+    change: () -> Unit,
+) {
     val present = doctor.attendanceStatus == Attendance.PRESENT
     val color by
         animateColorAsState(
@@ -46,11 +52,18 @@ fun AttendanceChip(doctor: Doctor, change: () -> Unit) {
             )
         },
         colors = AssistChipDefaults.assistChipColors(containerColor = color),
+        modifier =
+            if (tutorialTargets != null) Modifier.tutorialTarget("attendance_chip", tutorialTargets)
+            else Modifier,
     )
 }
 
 @Composable
-fun DoctorsScreen(vm: DoctorsViewModel, details: (String) -> Unit) {
+fun DoctorsScreen(
+    vm: DoctorsViewModel,
+    details: (String) -> Unit,
+    tutorialTargets: TutorialTargetRegistry? = null,
+) {
     val doctors by vm.doctors.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
@@ -89,7 +102,12 @@ fun DoctorsScreen(vm: DoctorsViewModel, details: (String) -> Unit) {
             InlineAutocompleteField(
                 value = query,
                 change = { query = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier =
+                    Modifier.fillMaxWidth().let {
+                        if (tutorialTargets != null)
+                            it.tutorialTarget("doctor_search", tutorialTargets)
+                        else it
+                    },
                 placeholder = { Text("Search name, department, clinic") },
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
                 suggestions = searchSuggestions,
@@ -127,8 +145,13 @@ fun DoctorsScreen(vm: DoctorsViewModel, details: (String) -> Unit) {
                 }
             }
         items(filtered, key = { it.id }) { doctor ->
+            val isFirst = filtered.indexOf(doctor) == 0
             Surface(
-                Modifier.animateItem().fillMaxWidth(),
+                Modifier.animateItem().fillMaxWidth().let {
+                    if (isFirst && tutorialTargets != null)
+                        it.tutorialTarget("doctor_card", tutorialTargets)
+                    else it
+                },
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
@@ -185,7 +208,14 @@ fun DoctorsScreen(vm: DoctorsViewModel, details: (String) -> Unit) {
                             Modifier.weight(1f),
                             style = MaterialTheme.typography.labelSmall,
                         )
-                        AttendanceChip(doctor) { toggling = doctor }
+                        AttendanceChip(
+                            doctor,
+                            if (filtered.indexOf(doctor) == 0 && tutorialTargets != null)
+                                tutorialTargets
+                            else null,
+                        ) {
+                            toggling = doctor
+                        }
                     }
                 }
             }
@@ -311,7 +341,13 @@ fun availability(d: Doctor): String =
     }
 
 @Composable
-fun DoctorDetailScreen(id: String, vm: DoctorsViewModel, edit: () -> Unit, back: () -> Unit) {
+fun DoctorDetailScreen(
+    id: String,
+    vm: DoctorsViewModel,
+    edit: () -> Unit,
+    back: () -> Unit,
+    tutorialTargets: TutorialTargetRegistry? = null,
+) {
     val doctors by vm.doctors.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val doctor = doctors?.firstOrNull { it.id == id }
@@ -364,9 +400,29 @@ fun DoctorDetailScreen(id: String, vm: DoctorsViewModel, edit: () -> Unit, back:
             }
         }
         item { ErrorBanner(error) }
-        item { Button(onClick = edit, modifier = Modifier.fillMaxWidth()) { Text("Edit doctor") } }
         item {
-            TextButton(onClick = { deleting = true }, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = edit,
+                modifier =
+                    Modifier.fillMaxWidth().let {
+                        if (tutorialTargets != null)
+                            it.tutorialTarget("edit_doctor", tutorialTargets)
+                        else it
+                    },
+            ) {
+                Text("Edit doctor")
+            }
+        }
+        item {
+            TextButton(
+                onClick = { deleting = true },
+                modifier =
+                    Modifier.fillMaxWidth().let {
+                        if (tutorialTargets != null)
+                            it.tutorialTarget("delete_doctor", tutorialTargets)
+                        else it
+                    },
+            ) {
                 Text("Delete doctor", color = MaterialTheme.colorScheme.error)
             }
         }

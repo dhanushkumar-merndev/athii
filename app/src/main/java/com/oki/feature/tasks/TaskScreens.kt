@@ -30,6 +30,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oki.core.storage.Task
 import com.oki.core.storage.TaskAlertMode
 import com.oki.core.ui.*
+import com.oki.feature.tutorial.TutorialTargetRegistry
+import com.oki.feature.tutorial.tutorialTarget
 import java.time.*
 
 private enum class TaskListFilter {
@@ -39,7 +41,11 @@ private enum class TaskListFilter {
 }
 
 @Composable
-fun TasksScreen(vm: TasksViewModel, edit: (String) -> Unit) {
+fun TasksScreen(
+    vm: TasksViewModel,
+    tutorialTargets: TutorialTargetRegistry? = null,
+    edit: (String) -> Unit,
+) {
     val tasks by vm.tasks.collectAsStateWithLifecycle()
     val milestone by vm.celebrationMilestone.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
@@ -69,6 +75,10 @@ fun TasksScreen(vm: TasksViewModel, edit: (String) -> Unit) {
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainer,
                     shape = RoundedCornerShape(24.dp),
+                    modifier =
+                        if (tutorialTargets != null)
+                            Modifier.tutorialTarget("task_dashboard", tutorialTargets)
+                        else Modifier,
                 ) {
                     Row(
                         Modifier.fillMaxWidth().padding(22.dp),

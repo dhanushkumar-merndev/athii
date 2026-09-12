@@ -31,6 +31,8 @@ import com.oki.core.ai.*
 import com.oki.core.security.Provider
 import com.oki.core.storage.*
 import com.oki.core.ui.*
+import com.oki.feature.tutorial.TutorialTargetRegistry
+import com.oki.feature.tutorial.tutorialTarget
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -171,7 +173,13 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
 // than leaving the user to hunt for Athii in a system list.
 @SuppressLint("BatteryLife")
 @Composable
-fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: () -> Unit) {
+fun SettingsScreen(
+    vm: SettingsViewModel,
+    clearChat: () -> Unit,
+    dataDeleted: () -> Unit,
+    replayTour: () -> Unit = {},
+    tutorialTargets: TutorialTargetRegistry? = null,
+) {
     val context = LocalContext.current
     val settings by vm.settings.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -269,7 +277,14 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
                 }
         }
         item {
-            SettingsCard("Notifications", Icons.Outlined.Notifications) {
+            SettingsCard(
+                "Notifications",
+                Icons.Outlined.Notifications,
+                modifier =
+                    if (tutorialTargets != null)
+                        Modifier.tutorialTarget("notification_settings", tutorialTargets)
+                    else Modifier,
+            ) {
                 Text(
                     "Choose Notification or Alarm on each task. An optional end time sends a normal notification with the task title.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -600,6 +615,35 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
             }
         }
         item {
+            SettingsCard("Help & Guidance", Icons.Outlined.HelpOutline) {
+                Text(
+                    "Learn how to use Athii effectively.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier =
+                        Modifier.fillMaxWidth().let {
+                            if (tutorialTargets != null)
+                                it.tutorialTarget("replay_tutorial", tutorialTargets)
+                            else it
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("App Tutorial", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Replay the guided tour",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = replayTour) { Text("Replay") }
+                }
+            }
+        }
+        item {
             Text(
                 "Athii · Version ${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.titleSmall,
@@ -742,10 +786,11 @@ fun CredentialEditor(
 private fun SettingsCard(
     title: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
-        Modifier.fillMaxWidth(),
+        modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceContainer,
         shape = RoundedCornerShape(22.dp),
     ) {

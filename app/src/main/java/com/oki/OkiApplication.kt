@@ -10,6 +10,7 @@ import com.oki.core.storage.*
 import com.oki.feature.assistant.*
 import com.oki.feature.doctors.*
 import com.oki.feature.tasks.*
+import com.oki.feature.tutorial.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -52,6 +53,8 @@ class AppContainer(context: Context) {
             settings.settings.first().reasoningEffort
         }
     }
+    val tutorialPrefs by lazy { TutorialPreferences(context) }
+    val tutorialTargets = TutorialTargetRegistry()
     private val recoveryMutex = Mutex()
 
     suspend fun recover() =
