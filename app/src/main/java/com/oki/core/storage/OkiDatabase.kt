@@ -26,6 +26,18 @@ interface TaskDao {
 
     @Query("DELETE FROM tasks") suspend fun clear()
 
+    /** One set-based delete: cost tracks the rows actually removed, not the task count. */
+    @Query(
+        "DELETE FROM tasks WHERE isCompleted = 1 AND completedAt IS NOT NULL AND completedAt < :cutoff"
+    )
+    suspend fun deleteCompletedBefore(cutoff: Long): Int
+
+    @Query("DELETE FROM tasks WHERE isCompleted = 1") suspend fun deleteCompleted(): Int
+
+    /** One indexed COUNT, so the cap check does not scale with the size of the table. */
+    @Query("SELECT COUNT(*) FROM tasks WHERE isCompleted = 0 AND id != :excludeId")
+    suspend fun activeCountExcluding(excludeId: String): Int
+
     @Query(
         "SELECT * FROM tasks WHERE (:query = '' OR instr(lower(title || ' ' || notes), lower(:query)) > 0) AND (:fromTime IS NULL OR dueAt >= :fromTime) AND (:toTime IS NULL OR dueAt < :toTime) AND (:completed IS NULL OR isCompleted = :completed) ORDER BY dueAt LIMIT :limit"
     )
@@ -62,6 +74,9 @@ interface DoctorDao {
 
     @Query("DELETE FROM doctors") suspend fun clear()
 
+    @Query("SELECT COUNT(*) FROM doctors WHERE id != :excludeId")
+    suspend fun countExcluding(excludeId: String): Int
+
     @Query(
         "SELECT * FROM doctors WHERE (:query = '' OR instr(lower(doctorName || ' ' || department || ' ' || hospitalOrClinic), lower(:query)) > 0) AND (:department = '' OR instr(lower(department), lower(:department)) > 0) AND (:attendance = '' OR attendanceStatus = :attendance) AND (:day = '' OR instr(workingDays, :day) > 0) AND (:time = '' OR (availableFrom != '' AND availableUntil != '' AND ((availableFrom <= availableUntil AND :time >= availableFrom AND :time <= availableUntil) OR (availableFrom > availableUntil AND (:time >= availableFrom OR :time <= availableUntil))))) ORDER BY doctorName COLLATE NOCASE LIMIT :limit"
     )
@@ -84,7 +99,7 @@ interface MaintenanceDao {
 
 @Database(
     entities = [Task::class, Doctor::class, Maintenance::class],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -96,6 +111,15 @@ abstract class OkiDatabase : RoomDatabase() {
     abstract fun maintenance(): MaintenanceDao
 
     companion object {
+        val MIGRATION_4_5 =
+            object : Migration(4, 5) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS index_tasks_isCompleted_completedAt ON tasks (isCompleted, completedAt)"
+                    )
+                }
+            }
+
         val MIGRATION_3_4 =
             object : Migration(3, 4) {
                 override fun migrate(db: SupportSQLiteDatabase) {

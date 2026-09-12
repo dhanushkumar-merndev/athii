@@ -9,6 +9,48 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AssistantRepositoryTest {
+    @Test
+    fun invalidSiblingDoesNotDiscardValidDrafts() = runTest {
+        val responses =
+            ArrayDeque(
+                listOf(
+                    call(
+                        "draftTasks",
+                        """{"drafts":[{"title":"Read"},null,{"title":""},{"title":"Walk"}]}""",
+                    ),
+                    buildJsonObject { put("content", "Please name the missing task.") },
+                )
+            )
+        val repo =
+            AssistantRepository(
+                AiRouter(GroqTransport { _, _, _, _, _ -> responses.removeFirst() }),
+                AssistantToolExecutor { _, _ -> JsonNull },
+            )
+        val answer = repo.ask("Three tasks")
+        assertEquals(listOf("Read", "Walk"), answer.taskDrafts.map { it.title })
+        assertTrue(answer.text.contains("missing", ignoreCase = true))
+    }
+
+    @Test
+    fun outageAfterDraftsStillReturnsReviewableBatch() = runTest {
+        var requests = 0
+        val repo =
+            AssistantRepository(
+                AiRouter(
+                    GroqTransport { _, _, _, _, _ ->
+                        if (requests++ == 0)
+                            call(
+                                "draftDoctors",
+                                """{"drafts":[{"doctorName":"Dr A"},{"doctorName":"Dr B"}]}""",
+                            )
+                        else throw ApiFailure(503)
+                    }
+                ),
+                AssistantToolExecutor { _, _ -> JsonNull },
+            )
+        assertEquals(2, repo.ask("Add Dr A and Dr B").doctorDrafts.size)
+    }
+
     private fun call(name: String, args: String) = buildJsonObject {
         put(
             "tool_calls",

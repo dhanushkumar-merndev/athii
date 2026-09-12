@@ -57,12 +57,17 @@ class SoundStore(private val context: Context) {
             }
         }
 
-    fun preview(uri: Uri) {
+    fun preview(uri: Uri, alarm: Boolean = false) {
         stop()
         preview =
             RingtoneManager.getRingtone(context, uri)?.apply {
                 audioAttributes =
-                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build()
+                    AudioAttributes.Builder()
+                        .setUsage(
+                            if (alarm) AudioAttributes.USAGE_ALARM
+                            else AudioAttributes.USAGE_NOTIFICATION
+                        )
+                        .build()
                 play()
             }
     }

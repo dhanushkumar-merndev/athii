@@ -1,12 +1,16 @@
 package com.oki.feature.assistant
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -20,10 +24,14 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import com.oki.AppContainer
 import com.oki.core.ai.*
@@ -46,6 +54,13 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
     val error = MutableStateFlow<String?>(null)
     val historyVisible = MutableStateFlow(false)
     val historyReady = MutableStateFlow(false)
+    val usage = c.aiUsage.usage
+    val activeModel = MutableStateFlow<String?>(null)
+    val compacting = MutableStateFlow(false)
+    val savingDrafts = MutableStateFlow<Set<String>>(emptySet())
+    val draftErrors = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val draftSaver = ChatDraftSaver(c.tasks, c.doctors)
+    private var summaryJob: Job? = null
     private var job: Job? = null
     private var requestVersion = 0L
     private var locallyChanged = false
@@ -81,24 +96,64 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
         busy.value = true
         error.value = null
         val version = ++requestVersion
+        summaryJob?.cancel()
+        compacting.value = false
         locallyChanged = true
         job =
             viewModelScope.launch {
                 try {
                     val id = activeConversationId.value ?: createConversation(question)
+                    val previous = conversationStore.value.first { it.id == id }
                     append(id, ChatMessage(text = question, user = true))
-                    val answer = c.assistant.ask(question, messagesFor(id))
+                    val context = summaryContext(previous)
+                    val answer =
+                        c.assistant.ask(question, context, previous.summary) { model ->
+                            if (version == requestVersion) activeModel.value = model.label
+                        }
                     currentCoroutineContext().ensureActive()
-                    append(
-                        id,
-                        ChatMessage(text = answer.text, user = false, drafts = answer.reviewDrafts),
-                    )
+                    val reply =
+                        ChatMessage(
+                            text = answer.text,
+                            user = false,
+                            drafts = answer.reviewDrafts,
+                            models = answer.models,
+                        )
+                    append(id, reply)
+                    summaryJob =
+                        viewModelScope.launch {
+                            compacting.value = true
+                            try {
+                                val memory =
+                                    c.assistant.summarize(
+                                        previous.summary,
+                                        question,
+                                        answer,
+                                        context,
+                                    )
+                                if (!memory.isNullOrBlank())
+                                    conversationStore.update { chats ->
+                                        chats.map {
+                                            if (it.id == id)
+                                                it.copy(
+                                                    summary = memory,
+                                                    summarizedThrough = reply.id,
+                                                )
+                                            else it
+                                        }
+                                    }
+                            } finally {
+                                compacting.value = false
+                            }
+                        }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     if (version == requestVersion) error.value = friendlyError(e)
                 } finally {
-                    if (version == requestVersion) busy.value = false
+                    if (version == requestVersion) {
+                        busy.value = false
+                        activeModel.value = null
+                    }
                 }
             }
     }
@@ -107,6 +162,9 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
         requestVersion++
         job?.cancel()
         job = null
+        summaryJob?.cancel()
+        compacting.value = false
+        activeModel.value = null
         busy.value = false
     }
 
@@ -127,6 +185,58 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
                             )
                         }
                 )
+            }
+        }
+    }
+
+    fun changeDraft(updated: ChatDraft) {
+        locallyChanged = true
+        draftErrors.update { it - updated.id }
+        conversationStore.update { chats ->
+            chats.map { chat ->
+                chat.copy(
+                    messages =
+                        chat.messages.map { message ->
+                            message.copy(
+                                drafts =
+                                    message.reviewDrafts.map { draft ->
+                                        if (
+                                            draft.id == updated.id &&
+                                                !draft.saved &&
+                                                draft.id !in savingDrafts.value
+                                        )
+                                            updated.copy(saved = false)
+                                        else draft
+                                    }
+                            )
+                        }
+                )
+            }
+        }
+    }
+
+    fun saveDraft(id: String) {
+        if (id in savingDrafts.value) return
+        val draft =
+            conversationStore.value
+                .flatMap { it.messages }
+                .flatMap { it.reviewDrafts }
+                .firstOrNull { it.id == id } ?: return
+        if (draft.saved) return
+        savingDrafts.update { it + id }
+        draftErrors.update { it - id }
+        viewModelScope.launch {
+            try {
+                draftSaver.save(draft)
+                markDraftSaved(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                draftErrors.update {
+                    it + (id to (e.message?.take(220) ?: "Could not save this item."))
+                }
+            } finally {
+                savingDrafts.update { it - id }
             }
         }
     }
@@ -183,7 +293,10 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
         conversationStore.update { conversations ->
             conversations.map { conversation ->
                 if (conversation.id == conversationId)
-                    conversation.copy(messages = conversation.messages + message)
+                    conversation.copy(
+                        messages = conversation.messages + message,
+                        updatedAt = System.currentTimeMillis(),
+                    )
                 else conversation
             }
         }
@@ -208,6 +321,11 @@ fun AssistantScreen(
     val activeId by vm.activeId.collectAsStateWithLifecycle()
     val historyVisible by vm.historyVisible.collectAsStateWithLifecycle()
     val historyReady by vm.historyReady.collectAsStateWithLifecycle()
+    val modelLabel by vm.activeModel.collectAsStateWithLifecycle()
+    val compacting by vm.compacting.collectAsStateWithLifecycle()
+    val usage by vm.usage.collectAsStateWithLifecycle()
+    var usageVisible by rememberSaveable { mutableStateOf(false) }
+    var reviewMessageId by rememberSaveable { mutableStateOf<String?>(null) }
     var question by rememberSaveable(activeId) { mutableStateOf("") }
     val scroll = rememberLazyListState()
     LaunchedEffect(activeId) { if (messages.isNotEmpty()) scroll.scrollToItem(messages.lastIndex) }
@@ -252,7 +370,7 @@ fun AssistantScreen(
                 }
                 item {
                     Text(
-                        "Questions, this conversation, and matching local records are sent to Groq. Chat history is saved on this device; each chat has its own context.",
+                        "Groq first, then Gemini if needed. Questions, compact conversation context and matching records go to the responding provider. Chat history stays on this device.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -276,22 +394,37 @@ fun AssistantScreen(
                         ) {
                             if (!message.user)
                                 Text(
-                                    "Athii",
+                                    message.models
+                                        .takeIf { it.isNotEmpty() }
+                                        ?.joinToString("\n") { it.label } ?: "Athii",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             FormattedAssistantText(message.text)
-                            message.reviewDrafts.forEachIndexed { index, draft ->
-                                key(draft.id) {
-                                    DraftPreview(
-                                        draft = draft,
-                                        number =
-                                            if (message.reviewDrafts.size > 1) index + 1 else null,
-                                        reviewTask = reviewTask,
-                                        reviewDoctor = reviewDoctor,
+                            if (message.reviewDrafts.size > 1) {
+                                FilledTonalButton(
+                                    onClick = { reviewMessageId = message.id },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(Icons.Outlined.FactCheck, null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "Review all ${message.reviewDrafts.size} items · ${message.reviewDrafts.count { it.saved }} saved"
                                     )
                                 }
-                            }
+                            } else
+                                message.reviewDrafts.forEachIndexed { index, draft ->
+                                    key(draft.id) {
+                                        DraftPreview(
+                                            draft = draft,
+                                            number =
+                                                if (message.reviewDrafts.size > 1) index + 1
+                                                else null,
+                                            reviewTask = reviewTask,
+                                            reviewDoctor = reviewDoctor,
+                                        )
+                                    }
+                                }
                         }
                     }
                 }
@@ -303,7 +436,10 @@ fun AssistantScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Loader2Circle(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Text("Thinking…", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            modelLabel?.let { "Thinking · $it" } ?: "Thinking…",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     TextButton(onClick = vm::cancel) { Text("Stop") }
                 }
@@ -320,30 +456,36 @@ fun AssistantScreen(
             shape = RoundedCornerShape(28.dp),
             maxLines = 5,
             trailingIcon = {
-                FilledIconButton(
-                    onClick = {
-                        if (busy) vm.cancel()
-                        else {
-                            vm.ask(question)
-                            question = ""
-                        }
-                    },
-                    enabled = historyReady && (busy || question.isNotBlank()),
-                    shape = CircleShape,
-                    modifier = Modifier.padding(end = 6.dp).size(44.dp),
-                    colors =
-                        IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                ) {
-                    Icon(
-                        if (busy) Icons.Outlined.Stop else Icons.Outlined.ArrowUpward,
-                        if (busy) "Stop response" else "Send message",
-                        Modifier.size(23.dp),
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { usageVisible = true }) {
+                        Icon(Icons.Outlined.DataUsage, "Model usage and limits")
+                    }
+                    FilledIconButton(
+                        onClick = {
+                            if (busy) vm.cancel()
+                            else {
+                                vm.ask(question)
+                                question = ""
+                            }
+                        },
+                        enabled = historyReady && (busy || question.isNotBlank()),
+                        shape = CircleShape,
+                        modifier = Modifier.padding(end = 6.dp).size(44.dp),
+                        colors =
+                            IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                                disabledContainerColor =
+                                    MaterialTheme.colorScheme.surfaceContainerHigh,
+                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                    ) {
+                        Icon(
+                            if (busy) Icons.Outlined.Stop else Icons.Outlined.ArrowUpward,
+                            if (busy) "Stop response" else "Send message",
+                            Modifier.size(23.dp),
+                        )
+                    }
                 }
             },
         )
@@ -354,7 +496,30 @@ fun AssistantScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    if (historyVisible)
+    if (usageVisible)
+        ModelUsageSheet(
+            usage,
+            conversations.firstOrNull { it.id == activeId }?.summary.orEmpty(),
+            compacting,
+        ) {
+            usageVisible = false
+        }
+    reviewMessageId?.let { id ->
+        val message = messages.firstOrNull { it.id == id }
+        if (message != null) BatchReviewSheet(vm, message) { reviewMessageId = null }
+    }
+    if (historyVisible) {
+        var historyNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        val timestamps = remember(conversations) { conversations.mapNotNull { it.updatedAt } }
+        LaunchedEffect(lifecycle, timestamps) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    historyNow = System.currentTimeMillis()
+                    delay(nextChatAgeUpdate(timestamps, historyNow))
+                }
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = vm::dismissHistory,
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -404,7 +569,11 @@ fun AssistantScreen(
                                         style = MaterialTheme.typography.titleSmall,
                                     )
                                     Text(
-                                        "${conversation.messages.size} messages",
+                                        listOfNotNull(
+                                                "${conversation.messages.size} messages",
+                                                chatAge(conversation.updatedAt, historyNow),
+                                            )
+                                            .joinToString(" · "),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -414,6 +583,7 @@ fun AssistantScreen(
                     }
             }
         }
+    }
 }
 
 @Composable
@@ -492,9 +662,83 @@ private fun DraftSavedLabel(label: String) {
 }
 
 @Composable
-private fun FormattedAssistantText(text: String) {
-    val formatted = remember(text) { text.toAssistantAnnotatedString() }
-    Text(formatted, style = MaterialTheme.typography.bodyLarge)
+internal fun FormattedAssistantText(text: String) {
+    val blocks = remember(text) { assistantBlocks(text) }
+    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            blocks.forEach { block ->
+                when (block) {
+                    is AssistantBlock.Prose ->
+                        Text(
+                            remember(block.text) { block.text.toAssistantAnnotatedString() },
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    is AssistantBlock.Table -> AssistantTable(block)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistantTable(table: AssistantBlock.Table) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val widths =
+            remember(table, maxWidth) {
+                val natural =
+                    table.headers.indices.map { column ->
+                        val longest =
+                            (listOf(table.headers[column]) + table.rows.map { it[column] }).maxOf {
+                                it.length
+                            }
+                        (longest * 7 + 28).coerceIn(120, 240).dp
+                    }
+                val extra =
+                    ((maxWidth - natural.fold(0.dp) { sum, width -> sum + width }) / natural.size)
+                        .coerceAtLeast(0.dp)
+                natural.map { it + extra }
+            }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                Modifier.horizontalScroll(rememberScrollState())
+                    .width(widths.fold(0.dp) { sum, width -> sum + width })
+            ) {
+                (listOf(table.headers) + table.rows).forEachIndexed { rowIndex, cells ->
+                    if (rowIndex > 0) HorizontalDivider()
+                    Surface(
+                        color =
+                            if (rowIndex == 0) MaterialTheme.colorScheme.surfaceContainerHigh
+                            else MaterialTheme.colorScheme.surface
+                    ) {
+                        Row {
+                            cells.forEachIndexed { column, value ->
+                                Text(
+                                    remember(value) { value.toAssistantAnnotatedString() },
+                                    modifier =
+                                        Modifier.width(widths[column])
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight =
+                                        if (rowIndex == 0) FontWeight.SemiBold
+                                        else FontWeight.Normal,
+                                    textAlign =
+                                        when (table.alignments[column]) {
+                                            CellAlignment.LEFT -> TextAlign.Start
+                                            CellAlignment.CENTER -> TextAlign.Center
+                                            CellAlignment.RIGHT -> TextAlign.End
+                                        },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun String.toAssistantAnnotatedString(): AnnotatedString = buildAnnotatedString {

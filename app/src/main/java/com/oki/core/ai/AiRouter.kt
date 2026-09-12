@@ -1,10 +1,13 @@
 package com.oki.core.ai
 
+import com.oki.core.security.Provider
 import com.oki.core.storage.ReasoningEffort
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 
 const val GROQ_PRIMARY = "openai/gpt-oss-120b"
@@ -24,6 +27,7 @@ class ApiFailure(
     val status: Int,
     val retryAfterMs: Long = 0,
     val modelUnavailable: Boolean = false,
+    val invalidToolCall: Boolean = false,
 ) : IOException("AI service request failed ($status)")
 
 class MalformedResult : IOException("AI returned an unreadable response.")
@@ -60,55 +64,106 @@ fun interface GroqTransport {
 
 class AiRouter(
     private val transport: GroqTransport,
+    private val geminiTransport: GroqTransport? = null,
+    private val available: suspend (Provider) -> Boolean = { true },
+    private val usage: AiUsageStore? = null,
     private val pause: suspend (Long) -> Unit = { delay(it) },
 ) {
     suspend fun complete(
         messages: JsonArray,
         tools: JsonArray,
         reasoningEffort: ReasoningEffort = ReasoningEffort.HIGH,
-    ): JsonObject {
-        var repair = false
-        var lastException: Exception? = null
+    ): JsonObject = completeTracked(messages, tools, reasoningEffort).message
 
-        for (model in GROQ_MODELS) {
-            try {
-                return validated(
-                    transport.complete(model, messages, tools, repair, reasoningEffort)
-                )
-            } catch (e: Exception) {
-                if (!transient(e)) throw e
-                lastException = e
-                repair = e is MalformedResult
-
-                if (e is ApiFailure && e.status == 429) {
-                    if (e.retryAfterMs in 1..3000) {
-                        pause(e.retryAfterMs)
-                    }
+    suspend fun completeTracked(
+        messages: JsonArray,
+        tools: JsonArray,
+        reasoningEffort: ReasoningEffort = ReasoningEffort.HIGH,
+        preferred: ModelIdentity? = null,
+        onAttempt: (ModelIdentity) -> Unit = {},
+    ): AiCompletion =
+        withTimeoutOrNull(140_000) {
+            var repair = false
+            var lastException: Exception? = null
+            val blocked = mutableSetOf<Provider>()
+            val candidates =
+                CHAT_MODELS.filter {
+                    available(it.provider) &&
+                        (it.provider == Provider.GROQ || geminiTransport != null)
+                }
+            check(candidates.isNotEmpty()) { "Add a Groq or Gemini API key in Settings." }
+            val ordered =
+                if (preferred in candidates) candidates.drop(candidates.indexOf(preferred))
+                else candidates
+            for (identity in ordered) {
+                if (identity.provider in blocked) continue
+                val cooldown = usage?.cooldown(identity) ?: 0
+                if (cooldown > 0) {
+                    lastException = ApiFailure(429, cooldown)
                     continue
                 }
+                val model = identity.model
+                val client =
+                    if (identity.provider == Provider.GROQ) transport
+                    else checkNotNull(geminiTransport)
+                suspend fun attempt(): AiCompletion {
+                    onAttempt(identity)
+                    val result =
+                        withTimeoutOrNull(20_000) {
+                            validated(
+                                client.complete(model, messages, tools, repair, reasoningEffort)
+                            )
+                        } ?: throw SocketTimeoutException()
+                    return AiCompletion(result, identity)
+                }
+                try {
+                    return@withTimeoutOrNull attempt()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (e is ApiFailure && e.status in listOf(401, 403)) {
+                        blocked += identity.provider
+                        lastException = e
+                        continue
+                    }
+                    if (!transient(e)) throw e
+                    lastException = e
+                    repair = e is MalformedResult || (e is ApiFailure && e.invalidToolCall)
 
-                if (e is SocketTimeoutException || e is MalformedResult) {
-                    try {
-                        return validated(
-                            transport.complete(model, messages, tools, repair, reasoningEffort)
-                        )
-                    } catch (retry: Exception) {
-                        if (!transient(retry)) throw retry
-                        lastException = retry
-                        if (
-                            retry is ApiFailure &&
-                                retry.status == 429 &&
-                                retry.retryAfterMs in 1..3000
-                        ) {
-                            pause(retry.retryAfterMs)
+                    if (e is ApiFailure && e.status == 429) {
+                        if (e.retryAfterMs in 1..3000) {
+                            pause(e.retryAfterMs)
+                        }
+                        continue
+                    }
+
+                    if ((e is SocketTimeoutException && identity == ordered.first()) || repair) {
+                        try {
+                            return@withTimeoutOrNull attempt()
+                        } catch (retry: CancellationException) {
+                            throw retry
+                        } catch (retry: Exception) {
+                            if (retry is ApiFailure && retry.status in listOf(401, 403)) {
+                                blocked += identity.provider
+                                lastException = retry
+                                continue
+                            }
+                            if (!transient(retry)) throw retry
+                            lastException = retry
+                            if (
+                                retry is ApiFailure &&
+                                    retry.status == 429 &&
+                                    retry.retryAfterMs in 1..3000
+                            ) {
+                                pause(retry.retryAfterMs)
+                            }
                         }
                     }
                 }
             }
-        }
 
-        throw lastException ?: MalformedResult()
-    }
+            throw lastException ?: MalformedResult()
+        } ?: throw SocketTimeoutException()
 
     suspend fun test(model: String) {
         validated(
@@ -133,7 +188,11 @@ class AiRouter(
         e is SocketTimeoutException ||
             e is MalformedResult ||
             (e is ApiFailure &&
-                (e.status == 429 || e.status in listOf(500, 502, 503, 504) || e.modelUnavailable))
+                (e.status == 429 ||
+                    e.status == 404 ||
+                    e.status in listOf(500, 502, 503, 504) ||
+                    e.modelUnavailable)) ||
+            (e is ApiFailure && e.invalidToolCall)
 
     private fun validated(message: JsonObject): JsonObject {
         val content = (message["content"] as? JsonPrimitive)?.contentOrNull
@@ -156,3 +215,5 @@ class AiRouter(
         return message
     }
 }
+
+data class AiCompletion(val message: JsonObject, val identity: ModelIdentity)

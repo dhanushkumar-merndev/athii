@@ -22,6 +22,7 @@ class AppContainer(context: Context) {
                 OkiDatabase.MIGRATION_1_2,
                 OkiDatabase.MIGRATION_2_3,
                 OkiDatabase.MIGRATION_3_4,
+                OkiDatabase.MIGRATION_4_5,
             )
             .build()
     }
@@ -34,9 +35,17 @@ class AppContainer(context: Context) {
     val tasks by lazy { TaskRepository(database.tasks(), reminders) }
     val doctors by lazy { DoctorRepository(database) }
     val sounds by lazy { SoundStore(context) }
-    private val http by lazy { AiHttp() }
-    val groq by lazy { AiRouter(GroqChatClient(credentials, http)) }
-    val gemini by lazy { GeminiVisionClient(credentials, http) }
+    val aiUsage by lazy { AiUsageStore(java.io.File(context.filesDir, "ai-usage.json")) }
+    private val http by lazy { AiHttp(aiUsage) }
+    val groq by lazy {
+        AiRouter(
+            GroqChatClient(credentials, http),
+            GeminiChatClient(credentials, http),
+            credentials::isConfigured,
+            aiUsage,
+        )
+    }
+    val gemini by lazy { GeminiVisionClient(credentials, http, usage = aiUsage) }
     val chatHistory by lazy { ChatHistoryRepository(context) }
     val assistant by lazy {
         AssistantRepository(groq, LocalAssistantToolExecutor(tasks, doctors)) {
@@ -56,15 +65,22 @@ class AppContainer(context: Context) {
                 /* Settings provides manual key recovery. */
             }
             doctors.ensureToday()
+            purgeExpiredCompletedTasks()
             tasks.restore()
             dailyReset.scheduleNext()
         }
+
+    /** Applies the chosen retention for completed tasks. Safe to call often; it is one delete. */
+    suspend fun purgeExpiredCompletedTasks() {
+        tasks.purgeCompleted(settings.settings.first().autoDeleteCompleted.days)
+    }
 
     suspend fun deleteAll() =
         recoveryMutex.withLock {
             tasks.clear()
             doctors.clear()
             chatHistory.clear()
+            aiUsage.clear()
             credentials.clear()
             settings.clear()
             publisher.clear()

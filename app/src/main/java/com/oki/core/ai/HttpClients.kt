@@ -4,7 +4,6 @@ import com.oki.core.security.*
 import com.oki.core.storage.ReasoningEffort
 import java.io.IOException
 import java.time.*
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -14,7 +13,7 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
-class AiHttp {
+class AiHttp(private val usage: AiUsageStore? = null) {
     private val client =
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -55,24 +54,29 @@ class AiHttp {
                             response.use {
                                 try {
                                     val text = it.body?.string().orEmpty()
+                                    val payload =
+                                        runCatching { aiJson.parseToJsonElement(text).jsonObject }
+                                            .getOrNull()
+                                    val provider =
+                                        if (url.startsWith("https://api.groq.com/")) Provider.GROQ
+                                        else Provider.GEMINI
+                                    val model =
+                                        body["model"]?.jsonPrimitive?.contentOrNull
+                                            ?: url.substringAfter("/models/", "")
+                                                .substringBefore(":")
+                                    if (model.isNotBlank())
+                                        usage?.record(
+                                            ModelIdentity(provider, model),
+                                            it.code,
+                                            it.headers.names().associateWith { name ->
+                                                it.header(name).orEmpty()
+                                            },
+                                            payload,
+                                        )
                                     if (!it.isSuccessful) {
                                         val retry = it.header("Retry-After")
                                         val ms =
-                                            retry?.toLongOrNull()?.times(1000)
-                                                ?: runCatching {
-                                                        Duration.between(
-                                                                Instant.now(),
-                                                                ZonedDateTime.parse(
-                                                                        retry,
-                                                                        DateTimeFormatter
-                                                                            .RFC_1123_DATE_TIME,
-                                                                    )
-                                                                    .toInstant(),
-                                                            )
-                                                            .toMillis()
-                                                            .coerceAtLeast(0)
-                                                    }
-                                                    .getOrDefault(0)
+                                            retryDelayMs(retry, payload, System.currentTimeMillis())
                                         val unavailable =
                                             it.code == 404 &&
                                                 runCatching {
@@ -91,7 +95,17 @@ class AiHttp {
                                                     .getOrDefault(false)
                                         if (continuation.isActive)
                                             continuation.resumeWithException(
-                                                ApiFailure(it.code, ms, unavailable)
+                                                ApiFailure(
+                                                    it.code,
+                                                    ms,
+                                                    unavailable,
+                                                    invalidToolCall =
+                                                        it.code == 400 &&
+                                                            (payload?.get("error") as? JsonObject)
+                                                                ?.get("code")
+                                                                ?.jsonPrimitive
+                                                                ?.contentOrNull == "tool_use_failed",
+                                                )
                                             )
                                     } else if (continuation.isActive) continuation.resume(text)
                                 } catch (e: Exception) {
@@ -137,7 +151,7 @@ class GroqChatClient(private val credentials: SecureCredentialStore, private val
                 else messages,
             )
             put("temperature", 0.2)
-            put("max_completion_tokens", if (tools.isNotEmpty()) 8192 else 2048)
+            put("max_completion_tokens", if (tools.isNotEmpty()) 3000 else 768)
             if (model.contains("oss")) {
                 put("reasoning_effort", reasoningEffort.name.lowercase())
                 put("include_reasoning", false)

@@ -144,23 +144,13 @@ internal object AssistantSchemas {
         tool("getUpcomingTasks", "Next 10 incomplete tasks from now", parameters(emptyMap()))
         tool("getTaskById", "Read one current task", parameters(mapOf("id" to "Task ID")))
         tool(
-            "draftTask",
-            "Propose one meaningful task for user review. Never saves it. Use draftTasks for multiple tasks.",
-            parameters(taskFields),
-        )
-        tool(
-            "draftDoctor",
-            "Propose one doctor draft for review using only known facts. Never saves it. Use draftDoctors for multiple doctors.",
-            parameters(doctorFields),
-        )
-        tool(
             "draftTasks",
-            "Propose all requested tasks together, up to 50 per batch. Each task is editable and must be reviewed and saved individually. Never saves data. Use meaningful distinct activities for random/example planning requests.",
+            "Propose one or more tasks for review, at most 10 per call and 50 total. Continue batches until all requested tasks are prepared. Never saves data. Use concrete activities for suggestions.",
             batchParameters(parameters(taskFields)),
         )
         tool(
             "draftDoctors",
-            "Propose all requested doctors together, up to 50 per batch. Each doctor must be reviewed and saved individually. Only include facts explicitly provided by the user or read from a current local record. Never invent names or medical details.",
+            "Propose one or more doctors for review, at most 10 per call and 50 total. Continue batches until all requested doctors are prepared. Use only supplied or freshly retrieved facts. Never saves data.",
             batchParameters(parameters(doctorFields)),
         )
     }

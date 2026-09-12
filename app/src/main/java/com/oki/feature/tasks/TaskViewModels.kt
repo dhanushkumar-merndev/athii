@@ -106,19 +106,11 @@ class TaskEditorViewModel(
     private var original: Task? = null
 
     init {
-        if (id == null && draft == null && state.get<String>("form").isNullOrBlank()) {
-            val defaultTime = ZonedDateTime.now().plusHours(1).withSecond(0).withNano(0)
-            val initial =
-                TaskForm(
-                    date = defaultTime.toLocalDate().toString(),
-                    time = defaultTime.format(DateTimeFormatter.ofPattern("HH:mm")),
-                    offset = "0",
-                )
-            change(initial)
-        }
         action {
             original = id?.let { c.tasks.get(it) ?: error("This task no longer exists.") }
             if (state.get<String>("form").isNullOrBlank()) {
+                // New tasks inherit the default lead time from Settings; saved tasks keep theirs.
+                val fallbackOffset = c.settings.settings.first().defaultOffset.toString()
                 val initial =
                     original?.let {
                         val local = Instant.ofEpochMilli(it.dueAt).atZone(ZoneId.systemDefault())
@@ -131,7 +123,7 @@ class TaskEditorViewModel(
                             endTime = it.endTime.orEmpty(),
                             reminder = it.reminderEnabled,
                             alertMode = it.alertMode,
-                            offset = "0",
+                            offset = it.reminderOffsetMinutes.toString(),
                             source = it.source,
                         )
                     }
@@ -146,7 +138,7 @@ class TaskEditorViewModel(
                                     d.startTime?.takeIf(String::isNotBlank) ?: d.time.orEmpty(),
                                 endTime = d.endTime.orEmpty(),
                                 reminder = true,
-                                offset = "0",
+                                offset = fallbackOffset,
                                 source =
                                     Source.valueOf(
                                         state.get<String>("draftSource") ?: "IMAGE_SCAN"
@@ -158,7 +150,7 @@ class TaskEditorViewModel(
                             TaskForm(
                                 date = it.toLocalDate().toString(),
                                 time = it.format(DateTimeFormatter.ofPattern("HH:mm")),
-                                offset = "0",
+                                offset = fallbackOffset,
                             )
                         }
                 change(initial)
@@ -189,7 +181,7 @@ class TaskEditorViewModel(
                 endTime = f.endTime.ifBlank { null },
                 reminderEnabled = f.reminder && !withoutReminder,
                 alertMode = f.alertMode,
-                reminderOffsetMinutes = 0,
+                reminderOffsetMinutes = parsedOffset(f),
             )
         c.tasks.save(task, notifyNow)
         saved.value = true
@@ -198,7 +190,23 @@ class TaskEditorViewModel(
     fun reminderInPast(): Boolean =
         runCatching {
                 val f = form.value!!
-                f.reminder && TimeRules.parseDue(f.date, f.time) <= System.currentTimeMillis()
+                f.reminder &&
+                    TimeRules.reminderAt(TimeRules.parseDue(f.date, f.time), parsedOffset(f)) <=
+                        System.currentTimeMillis()
             }
             .getOrDefault(false)
+
+    companion object {
+        /** Lead times offered as chips. Anything else is entered as a custom minute count. */
+        val OFFSET_PRESETS = listOf(0, 5, 10, 15, 30, 60)
+
+        fun parsedOffsetOrNull(form: TaskForm): Int? =
+            form.offset.trim().ifBlank { "0" }.toIntOrNull()?.takeIf { it in 0..525600 }
+
+        fun parsedOffset(form: TaskForm): Int =
+            parsedOffsetOrNull(form)
+                ?: throw IllegalArgumentException(
+                    "Choose a reminder lead time between 0 and 525600 minutes."
+                )
+    }
 }

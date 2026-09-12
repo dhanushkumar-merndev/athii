@@ -87,8 +87,10 @@ class ChatPersistenceTest {
             rule.runOnIdle { reopened.showHistory() }
             rule.onNodeWithText("Saved conversation").performClick()
             rule.onNodeWithText("Two suggestions").assertExists()
-            rule.onNodeWithText("Task created").assertExists()
-            rule.onAllNodesWithText("Review task").assertCountEquals(1)
+            rule.onNodeWithText("Review all 2 items · 1 saved").performClick()
+            rule.onNodeWithText("Saved on this device").assertExists()
+            rule.onNodeWithTag("batch-review-list").performScrollToNode(hasText("Save task"))
+            rule.onNodeWithText("Save task").assertExists()
         } finally {
             rule.runOnIdle { stores.forEach { it.clear() } }
             runBlocking { c.chatHistory.write(original) }

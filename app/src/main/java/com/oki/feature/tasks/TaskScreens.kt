@@ -340,7 +340,7 @@ fun TaskEditorScreen(
                     Text("Task alert", style = MaterialTheme.typography.titleMedium)
                     Text(
                         if (f.alertMode == TaskAlertMode.ALARM)
-                            "Ring at the start time. Stop or snooze inside Athii."
+                            "Ring before the start time. Mark done, snooze, or stop inside Athii."
                         else if (f.endTime.isBlank())
                             "Notify at the start time, with your notification sound."
                         else "Notify at the start and when the task time is over.",
@@ -371,11 +371,18 @@ fun TaskEditorScreen(
                 }
                 if (f.alertMode == TaskAlertMode.ALARM)
                     Text(
-                        "Uses your phone’s alarm volume. An optional end time sends a normal notification.",
+                        "Uses your phone’s alarm volume and your chosen alarm tone. An optional end time sends a normal notification.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
                     )
+            }
+            item {
+                ReminderLeadTimeField(
+                    offset = f.offset,
+                    alarm = f.alertMode == TaskAlertMode.ALARM,
+                    change = { vm.change(f.copy(offset = it)) },
+                )
             }
             if (!exactAllowed())
                 item {
@@ -471,12 +478,18 @@ fun TaskEditorScreen(
     if (pastDialog)
         AlertDialog(
             onDismissRequest = { pastDialog = false },
-            title = { Text("Start time has passed") },
+            title = {
+                Text(
+                    if (TaskEditorViewModel.parsedOffsetOrNull(f) == 0) "Start time has passed"
+                    else "That reminder time has passed"
+                )
+            },
             text = {
                 Text(
                     if (f.alertMode == TaskAlertMode.ALARM)
-                        "Ring now, change the start date or time, or save without an alert."
-                    else "Notify now, change the start date or time, or save without notifications."
+                        "Ring now, change the start time or lead time, or save without an alert."
+                    else
+                        "Notify now, change the start time or lead time, or save without notifications."
                 )
             },
             confirmButton = {
@@ -607,5 +620,46 @@ fun EndTimeField(endTime: String, endTimeChange: (String) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ReminderLeadTimeField(offset: String, alarm: Boolean, change: (String) -> Unit) {
+    val minutes = offset.trim().toIntOrNull()
+    val preset = minutes != null && minutes in TaskEditorViewModel.OFFSET_PRESETS
+    var custom by rememberSaveable(offset) { mutableStateOf(minutes != null && !preset) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Remind me", style = MaterialTheme.typography.titleMedium)
+        Text(
+            leadTimeSummary(minutes, alarm),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TaskEditorViewModel.OFFSET_PRESETS.forEach { option ->
+                FilterChip(
+                    selected = !custom && minutes == option,
+                    onClick = {
+                        custom = false
+                        change(option.toString())
+                    },
+                    label = { Text(if (option == 0) "At time" else "$option min") },
+                )
+            }
+            FilterChip(selected = custom, onClick = { custom = true }, label = { Text("Custom") })
+        }
+        if (custom)
+            Field("Minutes before the start time", offset, { change(it.filter(Char::isDigit)) })
+    }
+}
+
+private fun leadTimeSummary(minutes: Int?, alarm: Boolean): String {
+    val verb = if (alarm) "Rings" else "Notifies"
+    return when {
+        minutes == null -> "Enter how many minutes before the start time to alert you."
+        minutes == 0 -> "$verb exactly at the start time."
+        minutes % 1440 == 0 -> "$verb ${minutes / 1440} day(s) before the start time."
+        minutes % 60 == 0 -> "$verb ${minutes / 60} hour(s) before the start time."
+        else -> "$verb $minutes minutes before the start time."
     }
 }

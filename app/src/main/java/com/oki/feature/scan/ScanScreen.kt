@@ -62,6 +62,7 @@ class ScanViewModel(
                 .orEmpty()
         )
     val scanning = MutableStateFlow(false)
+    val modelLabel = state.getStateFlow<String?>("scan_model", null)
     val scanError = MutableStateFlow<String?>(null)
     private var job: Job? = null
     private var generation = 0
@@ -79,6 +80,7 @@ class ScanViewModel(
         cancel()
         action {
             updateDrafts(emptyList())
+            state["scan_model"] = null
             scanError.value = null
             val previous = path.value
             state["image_path"] = prep.prepare(uri).path
@@ -106,12 +108,13 @@ class ScanViewModel(
             viewModelScope.launch {
                 try {
                     val result =
-                        c.gemini.extract(
+                        c.gemini.extractTracked(
                             withContext(Dispatchers.IO) { File(file).readBytes() },
                             doctor,
                         )
                     if (generation != requestGeneration) return@launch
-                    updateDrafts(result.map { ScanDraft(content = it) })
+                    updateDrafts(result.drafts.map { ScanDraft(content = it) })
+                    state["scan_model"] = result.identity.label
                     if (drafts.value.isEmpty())
                         scanError.value =
                             "No readable ${if (doctor) "doctors" else "tasks"} found. Try another image or enter manually."
@@ -145,6 +148,7 @@ fun ScanScreen(
     val busy by vm.busy.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val scanError by vm.scanError.collectAsStateWithLifecycle()
+    val modelLabel by vm.modelLabel.collectAsStateWithLifecycle()
     var camera by remember { mutableStateOf(false) }
     var cameraError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
@@ -268,6 +272,7 @@ fun ScanScreen(
                         "Review ${drafts.size} ${if (doctor) "doctors" else "tasks"}",
                         style = MaterialTheme.typography.titleLarge,
                     )
+                    modelLabel?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
                     Text(
                         "${drafts.count { it.saved }} of ${drafts.size} created · Tap an item to review",
                         style = MaterialTheme.typography.bodySmall,

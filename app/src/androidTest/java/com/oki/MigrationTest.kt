@@ -23,10 +23,11 @@ class MigrationTest {
         helper
             .runMigrationsAndValidate(
                 "migration-fixture",
-                4,
+                5,
                 true,
                 OkiDatabase.MIGRATION_2_3,
                 OkiDatabase.MIGRATION_3_4,
+                OkiDatabase.MIGRATION_4_5,
             )
             .use { database ->
                 database

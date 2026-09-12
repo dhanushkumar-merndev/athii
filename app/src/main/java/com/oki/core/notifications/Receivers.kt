@@ -74,6 +74,9 @@ class DailyResetReceiver : BroadcastReceiver() {
         app.scope.launch {
             try {
                 app.container.doctors.ensureToday()
+                app.container.purgeExpiredCompletedTasks()
+                // Arms the next window of reminders; only the soonest are held by AlarmManager.
+                app.container.tasks.restore()
             } finally {
                 app.container.dailyReset.scheduleNext()
                 pending.finish()

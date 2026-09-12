@@ -107,12 +107,23 @@ class AlarmActivity : ComponentActivity() {
                         Spacer(Modifier.height(40.dp))
                         Button(
                             onClick = {
-                                taskId?.let(c.publisher::dismissStart)
-                                finish()
+                                val id = taskId ?: return@Button
+                                busy = true
+                                lifecycleScope.launch {
+                                    try {
+                                        c.tasks.complete(id, true)
+                                        finish()
+                                    } catch (e: Exception) {
+                                        error = e.message ?: "Could not mark this task complete."
+                                    } finally {
+                                        busy = false
+                                    }
+                                }
                             },
+                            enabled = !busy,
                             modifier = Modifier.fillMaxWidth().height(56.dp),
                         ) {
-                            Text("Stop alarm")
+                            Text("Mark complete")
                         }
                         Spacer(Modifier.height(12.dp))
                         OutlinedButton(
@@ -136,6 +147,17 @@ class AlarmActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth().height(56.dp),
                         ) {
                             Text("Snooze 5 minutes")
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(
+                            onClick = {
+                                taskId?.let(c.publisher::dismissStart)
+                                finish()
+                            },
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                        ) {
+                            Text("Stop alarm")
                         }
                         error?.let {
                             Text(

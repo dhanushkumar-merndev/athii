@@ -34,7 +34,7 @@ This script explicitly targets the emulator, never another connected device. Tes
 - Doctors: all requested fields, manual and scanned creation, details, full editing with stable IDs, confirmed deletion, search, department/day/attendance filters, deliberate Present/Absent changes.
 - Attendance: local midnight reset, transactional reset-date marker, startup/reboot/timezone recovery, foreground self-healing. Only attendance fields are reset; edited doctor details remain intact.
 - Scan: CameraX and system Photo Picker, bounded decoding/EXIF correction/compression, preview, cancel/retry/manual fallback, multiple structured drafts. No extraction can save itself.
-- Ask AI: Groq primary/fallback routing, bounded retry/repair, allowlisted local read tools, and multiple reviewable task/doctor drafts. Each draft tracks its own created state. History persists locally; opening the app starts a fresh chat and the History icon switches conversations. Athii knows the user's name is Yukthi and replies conversationally.
+- Ask AI: Groq → Gemini fallback with full successful model labels, bounded retry/repair, allowlisted local read tools, and multiple reviewable task/doctor drafts. One “Review all” button opens an editable, scrollable batch; each item has its own Save action and saved state. Valid items survive invalid siblings or a later API outage. History persists locally; opening the app starts a fresh chat and the History icon switches conversations.
 - Settings: Keystore-encrypted credentials, separate primary/fallback diagnostics, appearance, reminder settings, clear completed/chat/all-data with confirmation.
 
 ## AI setup and privacy
@@ -42,8 +42,13 @@ This script explicitly targets the emulator, never another connected device. Tes
 Manage credentials in **Settings → AI connections**:
 
 - Groq image extraction: `qwen/qwen3.6-27b`, then Gemini `gemini-3.5-flash` and `gemini-3.5-flash-lite` as bounded fallbacks. Unavailable providers are skipped; incomplete token-limited responses are not shown as complete batches.
-- Groq primary: `openai/gpt-oss-120b`
-- Groq fallback: `openai/gpt-oss-20b`
+- Chat order: Groq `openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.6-27b` → Gemini `gemini-3.5-flash` → `gemini-3.5-flash-lite`. Each new question starts at the first configured, non-cooling-down model. Tool continuations stay on the successful model and advance if necessary. Authentication failure skips the affected provider, not the independently configured provider.
+
+The usage icon immediately before Send opens all five models, measured input/output/total tokens, API request counts, and provider-reported remaining limits. Counters persist locally and include scans, summaries and diagnostics. Groq token headers describe its per-minute window; request headers describe its daily window. Colored bars and countdowns use those snapshots; elapsed windows are marked stale until another response arrives. Gemini remaining quota is marked unavailable unless reported, with a link to AI Studio and a midnight-Pacific daily-reset countdown. No quota polling consumes extra requests. These are free-tier-capable models, but billing and actual limits are controlled by the configured provider account.
+
+After a reply, a short background request updates the conversation's rolling summary. The next message uses that memory plus the latest full exchange and any unsummarized recent turns. Summary failures leave recent context available; a new question cancels an in-flight summary. Summaries also consume tokens and may omit older detail. Full history remains local and unchanged. Draft tool schemas avoid duplicate single-item definitions, and smaller batches/output reservations reduce free-tier pressure.
+
+Provider references: [Groq rate-limit headers](https://console.groq.com/docs/rate-limits), [Gemini limits and reset policy](https://ai.google.dev/gemini-api/docs/rate-limits), [Gemini chat compatibility](https://ai.google.dev/gemini-api/docs/openai), and [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 
 Existing keys are masked and never redisplayed. Credentials are AES-256-GCM encrypted using a non-exportable Android Keystore key. Normal builds do not package credentials. At the owner's explicit request, a personal build can initialize both keys automatically:
 

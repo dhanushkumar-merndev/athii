@@ -2,6 +2,7 @@ package com.oki.feature.assistant
 
 import android.content.Context
 import com.oki.core.ai.DoctorDraft
+import com.oki.core.ai.ModelIdentity
 import com.oki.core.ai.TaskDraft
 import com.oki.core.ai.aiJson
 import java.io.File
@@ -21,6 +22,7 @@ data class ChatDraft(
     val task: TaskDraft? = null,
     val doctor: DoctorDraft? = null,
     val saved: Boolean = false,
+    val reminderEnabled: Boolean = true,
 ) {
     val title: String
         get() = task?.title ?: doctor?.doctorName ?: "Details to review"
@@ -36,6 +38,7 @@ data class ChatMessage(
     val taskDraft: TaskDraft? = null,
     val doctorDraft: DoctorDraft? = null,
     val draftSaved: Boolean = false,
+    val models: List<ModelIdentity> = emptyList(),
 ) {
     val reviewDrafts: List<ChatDraft>
         get() =
@@ -60,7 +63,18 @@ data class ChatConversation(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val messages: List<ChatMessage> = emptyList(),
+    val summary: String = "",
+    val summarizedThrough: String? = null,
+    // Null for legacy chats: their original activity time was never recorded.
+    val updatedAt: Long? = null,
 )
+
+/** Keep the latest full exchange plus turns not yet covered by the stored summary. */
+internal fun summaryContext(conversation: ChatConversation): List<ChatMessage> {
+    val covered = conversation.messages.indexOfFirst { it.id == conversation.summarizedThrough }
+    return if (covered < 0 || conversation.summary.isBlank()) conversation.messages
+    else conversation.messages.drop((covered - 1).coerceAtLeast(0))
+}
 
 /**
  * Local history has one writer. Replacing an entire snapshot keeps each draft's saved state

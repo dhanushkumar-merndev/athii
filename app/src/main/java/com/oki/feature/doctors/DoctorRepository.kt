@@ -13,6 +13,11 @@ class DoctorRepository(
 ) {
     private val mutex = Mutex()
     private val dao = db.doctors()
+
+    companion object {
+        const val MAX_DOCTORS = 50
+    }
+
     val doctors = dao.observe()
 
     suspend fun get(id: String): Doctor? {
@@ -35,6 +40,10 @@ class DoctorRepository(
     suspend fun save(doctor: Doctor) =
         mutex.withLock {
             require(doctor.doctorName.isNotBlank()) { "Enter the doctor's name." }
+            if (dao.countExcluding(doctor.id) >= MAX_DOCTORS)
+                throw IllegalArgumentException(
+                    "You have reached the limit of $MAX_DOCTORS doctors. Delete a few, then add this one."
+                )
             listOf(doctor.availableFrom, doctor.availableUntil)
                 .filter { it.isNotBlank() }
                 .forEach { LocalTime.parse(it) }

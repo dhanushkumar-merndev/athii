@@ -30,6 +30,22 @@ class FakeTaskDao : TaskDao {
         data.value = emptyList()
     }
 
+    override suspend fun activeCountExcluding(excludeId: String) =
+        data.value.count { !it.isCompleted && it.id != excludeId }
+
+    override suspend fun deleteCompleted(): Int {
+        val remaining = data.value.filterNot { it.isCompleted }
+        return (data.value.size - remaining.size).also { data.value = remaining }
+    }
+
+    override suspend fun deleteCompletedBefore(cutoff: Long): Int {
+        val remaining =
+            data.value.filterNot {
+                it.isCompleted && it.completedAt != null && it.completedAt!! < cutoff
+            }
+        return (data.value.size - remaining.size).also { data.value = remaining }
+    }
+
     override suspend fun search(
         query: String,
         fromTime: Long?,
@@ -70,7 +86,7 @@ class FakeScheduler : ReminderScheduler {
 
 class TaskRepositoryTest {
     @Test
-    fun alarmUsesSelectedStartEvenForLegacyOffset() = runTest {
+    fun alarmRingsAtTheChosenLeadTime() = runTest {
         val dao = FakeTaskDao()
         val scheduler = FakeScheduler()
         val repo = TaskRepository(dao, scheduler)
@@ -80,7 +96,93 @@ class TaskRepositoryTest {
                 """{"id":"alarm-mode","title":"Read","dueAt":$due,"reminderOffsetMinutes":5,"alertMode":"ALARM"}"""
             )
         repo.save(alarm)
-        assertEquals(due, scheduler.alarms[alarm.id])
+        assertEquals(due - 300_000, scheduler.alarms[alarm.id])
+
+        val atStart = alarm.copy(id = "alarm-at-start", reminderOffsetMinutes = 0)
+        repo.save(atStart)
+        assertEquals(due, scheduler.alarms[atStart.id])
+    }
+
+    @Test
+    fun activeTaskCapBlocksNewButAllowsEditingAndCompleting() = runTest {
+        val dao = FakeTaskDao()
+        val repo = TaskRepository(dao, FakeScheduler())
+        val due = System.currentTimeMillis() + 3_600_000
+        dao.data.value =
+            (1..TaskRepository.MAX_ACTIVE_TASKS).map {
+                Task(id = "t$it", title = "Task $it", dueAt = due)
+            }
+
+        // A brand-new active task is refused at the cap.
+        val overflow = runCatching {
+            repo.save(Task(id = "new", title = "One too many", dueAt = due))
+        }
+        assertTrue(overflow.isFailure)
+
+        // Editing one of the existing tasks must still work.
+        repo.save(dao.data.value.first().copy(title = "Renamed"))
+        assertEquals("Renamed", dao.get("t1")!!.title)
+
+        // Completing frees a slot, so the next new task saves.
+        repo.complete("t1", true)
+        repo.save(Task(id = "new", title = "Now it fits", dueAt = due))
+        assertEquals("Now it fits", dao.get("new")!!.title)
+    }
+
+    @Test
+    fun restoreArmsOnlyTheSoonestRemindersToStayUnderTheAlarmBudget() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val now = System.currentTimeMillis()
+        val count = TaskRepository.ARMED_REMINDER_LIMIT + 120
+        // Task i is due i minutes out, so the soonest ones are the low indices.
+        dao.data.value =
+            (1..count).map {
+                Task(
+                    id = "t$it",
+                    title = "Task $it",
+                    dueAt = now + it * 60_000L,
+                    scheduledReminderAt = now + it * 60_000L,
+                )
+            }
+
+        repo.restore()
+
+        val armed = scheduler.alarms.keys.filterNot { it.endsWith(":end") }
+        assertEquals(TaskRepository.ARMED_REMINDER_LIMIT, armed.size)
+        assertTrue("soonest task must be armed", "t1" in armed)
+        assertTrue("furthest task must be deferred", "t$count" !in armed)
+    }
+
+    @Test
+    fun autoDeleteRemovesOnlyCompletedTasksPastRetention() = runTest {
+        val dao = FakeTaskDao()
+        val repo = TaskRepository(dao, FakeScheduler())
+        val now = System.currentTimeMillis()
+        val due = now + 3_600_000
+        dao.data.value =
+            listOf(
+                Task(
+                    id = "old",
+                    title = "Old",
+                    dueAt = due,
+                    isCompleted = true,
+                    completedAt = now - 8 * 86_400_000L,
+                ),
+                Task(
+                    id = "recent",
+                    title = "Recent",
+                    dueAt = due,
+                    isCompleted = true,
+                    completedAt = now - 2 * 86_400_000L,
+                ),
+                Task(id = "open", title = "Open", dueAt = due),
+            )
+        assertEquals(0, repo.purgeCompleted(null, now))
+        assertEquals(3, dao.data.value.size)
+        assertEquals(1, repo.purgeCompleted(7, now))
+        assertEquals(setOf("recent", "open"), dao.data.value.map { it.id }.toSet())
     }
 
     @Test

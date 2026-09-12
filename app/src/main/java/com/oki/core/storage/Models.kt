@@ -2,6 +2,7 @@ package com.oki.core.storage
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.time.*
 import java.util.UUID
@@ -27,7 +28,11 @@ enum class TaskAlertMode {
 }
 
 @Serializable
-@Entity(tableName = "tasks")
+@Entity(
+    tableName = "tasks",
+    // Auto-delete sweeps completed tasks by age; keep that a range scan, not a table scan.
+    indices = [Index(value = ["isCompleted", "completedAt"])],
+)
 data class Task(
     @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val title: String,

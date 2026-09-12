@@ -80,6 +80,8 @@ class AndroidReminderScheduler(
                             } catch (_: SecurityException) {
                                 // Permission may be revoked after validation. Never turn an alarm
                                 // into an inexact reminder.
+                            } catch (_: IllegalStateException) {
+                                // Per-app alarm ceiling reached; see scheduleAlarm.
                             }
                         }
                     } else scheduleAlarm(alarm, at, intent(task.id, at, kind), hasExactAccess())
@@ -100,7 +102,16 @@ internal fun scheduleAlarm(alarm: AlarmManager, at: Long, pending: PendingIntent
         if (exact) alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
         else alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
     } catch (_: SecurityException) {
-        alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+        // Exact access can be revoked between the check and the call; never drop the reminder.
+        try {
+            alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+        } catch (_: IllegalStateException) {
+            /* At the per-app alarm ceiling. See below. */
+        }
+    } catch (_: IllegalStateException) {
+        // Android caps an app at 500 concurrent alarms and throws once that is reached. Losing one
+        // reminder is recoverable; letting this escape would kill the app on every launch, because
+        // recovery reschedules every task at startup and would hit the same ceiling again.
     }
 }
 
