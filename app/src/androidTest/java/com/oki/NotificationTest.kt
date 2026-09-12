@@ -7,8 +7,10 @@ import androidx.core.content.FileProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.oki.core.ai.aiJson
 import com.oki.core.notifications.*
 import com.oki.core.storage.*
+import com.oki.feature.tasks.TaskNotificationKind
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -25,6 +27,109 @@ class NotificationTest {
     private fun shell(command: String) {
         InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command).use {
             android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes()
+        }
+    }
+
+    @Test
+    fun inAppAlarmRingsWithStopAndSnoozeButEndStaysANotification(): Unit = runBlocking {
+        shell("pm grant com.oki android.permission.POST_NOTIFICATIONS")
+        val publisher = NotificationPublisher(context)
+        val task =
+            aiJson.decodeFromString<Task>(
+                """{"id":"native-alarm-test","title":"Read","dueAt":1,"alertMode":"ALARM"}"""
+            )
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val c = (context.applicationContext as OkiApplication).container
+        c.database.tasks().put(task)
+        try {
+            publisher.publish(task, Settings(soundMode = SoundMode.SILENT))
+            publisher.publish(
+                task,
+                Settings(soundMode = SoundMode.SILENT),
+                TaskNotificationKind.END,
+            )
+            val deadline = System.currentTimeMillis() + 5000
+            while (
+                manager.activeNotifications.count { it.tag.startsWith("task:${task.id}") } < 2 &&
+                    System.currentTimeMillis() < deadline
+            ) Thread.sleep(50)
+            val start =
+                manager.activeNotifications
+                    .single { it.tag == ChannelIdentity.notificationTag(task.id) }
+                    .notification
+            assertTrue(start.flags and android.app.Notification.FLAG_INSISTENT != 0)
+            assertEquals(300000L, start.timeoutAfter)
+            assertEquals(listOf("Stop", "Snooze 5 min"), start.actions.map { it.title.toString() })
+            val channel = manager.getNotificationChannel(start.channelId)
+            assertEquals(android.media.AudioAttributes.USAGE_ALARM, channel.audioAttributes.usage)
+            assertEquals(android.provider.Settings.System.DEFAULT_ALARM_ALERT_URI, channel.sound)
+            assertFalse(channel.canBypassDnd())
+            val end =
+                manager.activeNotifications
+                    .single {
+                        it.tag == ChannelIdentity.notificationTag(task.id, TaskNotificationKind.END)
+                    }
+                    .notification
+            assertEquals(0, end.flags and android.app.Notification.FLAG_INSISTENT)
+            assertNull(end.fullScreenIntent)
+            assertNull(manager.getNotificationChannel(end.channelId).sound)
+            start.actions[0].actionIntent.send()
+            val stopDeadline = System.currentTimeMillis() + 3000
+            while (
+                publisher.isAlarmActive(task.id) && System.currentTimeMillis() < stopDeadline
+            ) kotlinx.coroutines.delay(50)
+            assertFalse(publisher.isAlarmActive(task.id))
+            assertTrue(
+                manager.activeNotifications.any {
+                    it.tag == ChannelIdentity.notificationTag(task.id, TaskNotificationKind.END)
+                }
+            )
+        } finally {
+            c.tasks.delete(task.id)
+        }
+    }
+
+    @Test
+    fun inAppAlarmSchedulesThroughAlarmClockAndSnoozesWithoutChangingStart(): Unit = runBlocking {
+        shell("pm grant com.oki android.permission.POST_NOTIFICATIONS")
+        shell("appops set com.oki SCHEDULE_EXACT_ALARM allow")
+        val c = (context.applicationContext as OkiApplication).container
+        val due = System.currentTimeMillis() + 2500
+        val task =
+            Task(
+                id = "native-alarm-clock",
+                title = "Start reading",
+                dueAt = due,
+                alertMode = TaskAlertMode.ALARM,
+            )
+        val manager = context.getSystemService(android.app.AlarmManager::class.java)
+        try {
+            c.tasks.save(task)
+            assertEquals(due, manager.nextAlarmClock.triggerTime)
+            val deadline = System.currentTimeMillis() + 12000
+            while (
+                !c.publisher.isAlarmActive(task.id) && System.currentTimeMillis() < deadline
+            ) kotlinx.coroutines.delay(50)
+            assertTrue(c.publisher.isAlarmActive(task.id))
+            val notification =
+                context
+                    .getSystemService(NotificationManager::class.java)
+                    .activeNotifications
+                    .single { it.tag == ChannelIdentity.notificationTag(task.id) }
+                    .notification
+            notification.actions[1].actionIntent.send()
+            val snoozeDeadline = System.currentTimeMillis() + 3000
+            while (
+                c.publisher.isAlarmActive(task.id) && System.currentTimeMillis() < snoozeDeadline
+            ) kotlinx.coroutines.delay(50)
+            assertFalse(c.publisher.isAlarmActive(task.id))
+            val updated = c.tasks.get(task.id)!!
+            assertEquals(TaskAlertMode.ALARM, updated.alertMode)
+            assertEquals(due, updated.dueAt)
+            assertEquals(updated.scheduledReminderAt, manager.nextAlarmClock.triggerTime)
+            assertTrue(updated.scheduledReminderAt!! > System.currentTimeMillis() + 290000)
+        } finally {
+            c.tasks.delete(task.id)
         }
     }
 
@@ -136,5 +241,62 @@ class NotificationTest {
         )
         c.tasks.delete(a.id)
         c.tasks.delete(b.id)
+    }
+
+    @Test
+    fun startAndEndNotificationsDeliverSeparatelyAndUseNormalSoundChannels(): Unit = runBlocking {
+        shell("pm grant com.oki android.permission.POST_NOTIFICATIONS")
+        shell("appops set com.oki SCHEDULE_EXACT_ALARM allow")
+        val c = (context.applicationContext as OkiApplication).container
+        val now = System.currentTimeMillis()
+        val task =
+            Task(
+                id = "start-end-delivery",
+                title = "Focused reading",
+                dueAt = now + 2000,
+                scheduledReminderAt = now + 2000,
+                scheduledEndReminderAt = now + 3500,
+            )
+        c.database.tasks().put(task)
+        // Recovery follows the same path used after reboot or an app update.
+        c.tasks.restore()
+        val manager = context.getSystemService(NotificationManager::class.java)
+        try {
+            val deadline = System.currentTimeMillis() + 12000
+            while (
+                manager.activeNotifications.count { it.tag.startsWith("task:${task.id}") } < 2 &&
+                    System.currentTimeMillis() < deadline
+            ) kotlinx.coroutines.delay(100)
+            val notifications =
+                manager.activeNotifications.filter { it.tag.startsWith("task:${task.id}") }
+            assertEquals(2, notifications.size)
+            val end =
+                notifications.single {
+                    it.tag == ChannelIdentity.notificationTag(task.id, TaskNotificationKind.END)
+                }
+            assertEquals(
+                "Task time is over: ${task.title}",
+                end.notification.extras.getCharSequence("android.title").toString(),
+            )
+            assertTrue(
+                end.notification.extras
+                    .getCharSequence("android.text")
+                    .toString()
+                    .contains(task.title)
+            )
+            assertNull(end.notification.fullScreenIntent)
+            val channel = manager.getNotificationChannel(end.notification.channelId)
+            assertEquals(
+                android.media.AudioAttributes.USAGE_NOTIFICATION,
+                channel.audioAttributes.usage,
+            )
+            assertFalse(channel.canBypassDnd())
+            assertNull(c.tasks.get(task.id)!!.scheduledReminderAt)
+            assertNull(c.tasks.get(task.id)!!.scheduledEndReminderAt)
+            c.tasks.complete(task.id, true)
+            assertTrue(manager.activeNotifications.none { it.tag.startsWith("task:${task.id}") })
+        } finally {
+            c.tasks.delete(task.id)
+        }
     }
 }

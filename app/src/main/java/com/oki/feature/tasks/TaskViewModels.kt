@@ -72,7 +72,8 @@ data class TaskForm(
     val startTime: String = "",
     val endTime: String = "",
     val reminder: Boolean = true,
-    val offset: String = "5",
+    val alertMode: TaskAlertMode = TaskAlertMode.NOTIFICATION,
+    val offset: String = "0",
     val source: Source = Source.MANUAL,
     val review: Boolean = false,
 )
@@ -111,7 +112,7 @@ class TaskEditorViewModel(
                 TaskForm(
                     date = defaultTime.toLocalDate().toString(),
                     time = defaultTime.format(DateTimeFormatter.ofPattern("HH:mm")),
-                    offset = "5",
+                    offset = "0",
                 )
             change(initial)
         }
@@ -126,10 +127,11 @@ class TaskEditorViewModel(
                             notes = it.notes,
                             date = local.toLocalDate().toString(),
                             time = local.format(DateTimeFormatter.ofPattern("HH:mm")),
-                            startTime = it.startTime.orEmpty(),
+                            startTime = local.format(DateTimeFormatter.ofPattern("HH:mm")),
                             endTime = it.endTime.orEmpty(),
                             reminder = it.reminderEnabled,
-                            offset = it.reminderOffsetMinutes.toString(),
+                            alertMode = it.alertMode,
+                            offset = "0",
                             source = it.source,
                         )
                     }
@@ -139,14 +141,12 @@ class TaskEditorViewModel(
                                 title = d.title.orEmpty(),
                                 notes = d.notes.orEmpty(),
                                 date = d.date.orEmpty(),
-                                time = d.time.orEmpty(),
-                                startTime = d.startTime.orEmpty(),
+                                time = d.startTime?.takeIf(String::isNotBlank) ?: d.time.orEmpty(),
+                                startTime =
+                                    d.startTime?.takeIf(String::isNotBlank) ?: d.time.orEmpty(),
                                 endTime = d.endTime.orEmpty(),
                                 reminder = true,
-                                offset =
-                                    (d.reminderOffsetMinutes
-                                            ?: c.settings.settings.first().defaultOffset)
-                                        .toString(),
+                                offset = "0",
                                 source =
                                     Source.valueOf(
                                         state.get<String>("draftSource") ?: "IMAGE_SCAN"
@@ -158,7 +158,7 @@ class TaskEditorViewModel(
                             TaskForm(
                                 date = it.toLocalDate().toString(),
                                 time = it.format(DateTimeFormatter.ofPattern("HH:mm")),
-                                offset = c.settings.settings.first().defaultOffset.toString(),
+                                offset = "0",
                             )
                         }
                 change(initial)
@@ -179,18 +179,17 @@ class TaskEditorViewModel(
             } catch (_: Exception) {
                 error("Choose a valid date and time (YYYY-MM-DD and HH:mm).")
             }
-        val offset =
-            f.offset.toIntOrNull()?.takeIf { it in 0..525600 }
-                ?: error("Enter a reminder offset from 0 to 525600 minutes.")
+        TimeRules.endAt(due, f.endTime)
         val task =
             (original ?: Task(title = f.title, dueAt = due, source = f.source)).copy(
                 title = f.title,
                 notes = f.notes,
                 dueAt = due,
-                startTime = f.startTime.ifBlank { null },
+                startTime = f.time,
                 endTime = f.endTime.ifBlank { null },
                 reminderEnabled = f.reminder && !withoutReminder,
-                reminderOffsetMinutes = offset,
+                alertMode = f.alertMode,
+                reminderOffsetMinutes = 0,
             )
         c.tasks.save(task, notifyNow)
         saved.value = true
@@ -199,9 +198,7 @@ class TaskEditorViewModel(
     fun reminderInPast(): Boolean =
         runCatching {
                 val f = form.value!!
-                f.reminder &&
-                    TimeRules.reminderAt(TimeRules.parseDue(f.date, f.time), f.offset.toInt()) <=
-                        System.currentTimeMillis()
+                f.reminder && TimeRules.parseDue(f.date, f.time) <= System.currentTimeMillis()
             }
             .getOrDefault(false)
 }

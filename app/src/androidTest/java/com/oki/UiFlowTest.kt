@@ -66,7 +66,8 @@ class UiFlowTest {
         rule.onNodeWithText("Task title *").performTextInput("UI test task")
         rule.onNode(hasScrollToIndexAction()).performScrollToNode(isToggleable())
         rule.onNode(isToggleable()).performClick()
-        rule.onNodeWithText("Save Task").performScrollTo().performClick()
+        rule.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Save Task"))
+        rule.onNodeWithText("Save Task").performClick()
         rule.waitUntil(10000) {
             rule.onAllNodesWithText("UI test task").fetchSemanticsNodes().isNotEmpty()
         }
@@ -82,7 +83,7 @@ class UiFlowTest {
         rule.onNodeWithText("Ask AI", useUnmergedTree = true).performClick()
         rule.onNodeWithText("What’s on your mind?").assertIsDisplayed()
         rule.onNodeWithContentDescription("Settings").performClick()
-        rule.onNodeWithText("A few preferences for your day.").assertIsDisplayed()
+        rule.onNodeWithText("Make Athii yours.").assertIsDisplayed()
         rule.onNodeWithContentDescription("Back").performClick()
         rule.onNodeWithText("Tasks", useUnmergedTree = true).assertIsDisplayed()
     }
@@ -111,7 +112,7 @@ class UiFlowTest {
         rule.onNodeWithText("Ask AI", useUnmergedTree = true).performClick()
         val footerBefore =
             rule.onNodeWithTag("active-tab-indicator").fetchSemanticsNode().boundsInRoot
-        rule.onNode(hasSetTextAction()).performClick()
+        rule.onNodeWithText("Ask anything about your day").performClick()
         rule.waitUntil(10000) {
             var visible = false
             rule.activity.runOnUiThread {

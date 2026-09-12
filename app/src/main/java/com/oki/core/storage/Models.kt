@@ -1,5 +1,6 @@
 package com.oki.core.storage
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.time.*
@@ -20,6 +21,12 @@ enum class Attendance {
 }
 
 @Serializable
+enum class TaskAlertMode {
+    NOTIFICATION,
+    ALARM,
+}
+
+@Serializable
 @Entity(tableName = "tasks")
 data class Task(
     @PrimaryKey val id: String = UUID.randomUUID().toString(),
@@ -28,8 +35,11 @@ data class Task(
     val dueAt: Long,
     val timeZoneIdAtCreation: String = ZoneId.systemDefault().id,
     val reminderEnabled: Boolean = true,
-    val reminderOffsetMinutes: Int = 5,
+    @ColumnInfo(defaultValue = "'NOTIFICATION'")
+    val alertMode: TaskAlertMode = TaskAlertMode.NOTIFICATION,
+    val reminderOffsetMinutes: Int = 0,
     val scheduledReminderAt: Long? = null,
+    val scheduledEndReminderAt: Long? = null,
     val isCompleted: Boolean = false,
     val completedAt: Long? = null,
     val startTime: String? = null,
@@ -64,6 +74,20 @@ data class Doctor(
 data class Maintenance(@PrimaryKey val key: String, val value: String)
 
 object TimeRules {
+    /** End times belong to the task's selected date; overnight tasks need another date. */
+    fun endAt(startAt: Long, endTime: String?, zone: ZoneId = ZoneId.systemDefault()): Long? {
+        if (endTime.isNullOrBlank()) return null
+        val date = Instant.ofEpochMilli(startAt).atZone(zone).toLocalDate()
+        val end =
+            try {
+                parseDue(date.toString(), endTime, zone)
+            } catch (_: Exception) {
+                throw IllegalArgumentException("Choose a valid end time (HH:mm).")
+            }
+        require(end > startAt) { "End time must be after the start time on the same date." }
+        return end
+    }
+
     fun reminderAt(dueAt: Long, offset: Int): Long {
         require(offset in 0..525600) { "Choose an offset between 0 and 525600 minutes." }
         return Math.subtractExact(dueAt, offset * 60_000L)

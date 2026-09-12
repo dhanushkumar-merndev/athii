@@ -16,26 +16,33 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 class AppContainer(context: Context) {
-    val database =
+    val database by lazy {
         Room.databaseBuilder(context, OkiDatabase::class.java, "oki.db")
-            .addMigrations(OkiDatabase.MIGRATION_1_2)
+            .addMigrations(
+                OkiDatabase.MIGRATION_1_2,
+                OkiDatabase.MIGRATION_2_3,
+                OkiDatabase.MIGRATION_3_4,
+            )
             .build()
-    val settings = SettingsRepository(context)
-    val credentials = SecureCredentialStore(context)
-    private val embeddedCredentials = EmbeddedCredentialBootstrap(context, credentials)
-    val publisher = NotificationPublisher(context)
-    val reminders = AndroidReminderScheduler(context, publisher)
-    val dailyReset = DailyDoctorResetScheduler(context)
-    val tasks = TaskRepository(database.tasks(), reminders)
-    val doctors = DoctorRepository(database)
-    val sounds = SoundStore(context)
-    private val http = AiHttp()
-    val groq = AiRouter(GroqChatClient(credentials, http))
-    val gemini = GeminiVisionClient(credentials, http)
-    val assistant =
+    }
+    val settings by lazy { SettingsRepository(context) }
+    val credentials by lazy { SecureCredentialStore(context) }
+    private val embeddedCredentials by lazy { EmbeddedCredentialBootstrap(context, credentials) }
+    val publisher by lazy { NotificationPublisher(context) }
+    val reminders by lazy { AndroidReminderScheduler(context, publisher) }
+    val dailyReset by lazy { DailyDoctorResetScheduler(context) }
+    val tasks by lazy { TaskRepository(database.tasks(), reminders) }
+    val doctors by lazy { DoctorRepository(database) }
+    val sounds by lazy { SoundStore(context) }
+    private val http by lazy { AiHttp() }
+    val groq by lazy { AiRouter(GroqChatClient(credentials, http)) }
+    val gemini by lazy { GeminiVisionClient(credentials, http) }
+    val chatHistory by lazy { ChatHistoryRepository(context) }
+    val assistant by lazy {
         AssistantRepository(groq, LocalAssistantToolExecutor(tasks, doctors)) {
             settings.settings.first().reasoningEffort
         }
+    }
     private val recoveryMutex = Mutex()
 
     suspend fun recover() =
@@ -57,6 +64,7 @@ class AppContainer(context: Context) {
         recoveryMutex.withLock {
             tasks.clear()
             doctors.clear()
+            chatHistory.clear()
             credentials.clear()
             settings.clear()
             publisher.clear()

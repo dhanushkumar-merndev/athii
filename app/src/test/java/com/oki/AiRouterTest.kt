@@ -126,22 +126,49 @@ class AiRouterTest {
     }
 
     @Test
-    fun bothModelsFailCleanly() = runTest {
-        val fake = Fake(mutableListOf(ApiFailure(503), ApiFailure(503)))
+    fun allModelsFailCleanly() = runTest {
+        val fake = Fake(mutableListOf(ApiFailure(503), ApiFailure(503), ApiFailure(503)))
         val failure =
             runCatching { AiRouter(fake).complete(messages, messages) }.exceptionOrNull()!!
         assertEquals(
             "AI service temporarily unavailable. Please try again.",
             friendlyError(failure),
         )
-        assertEquals(2, fake.calls.size)
+        assertEquals(3, fake.calls.size)
     }
 
     @Test
-    fun longRetryAfterDoesNotRetryEarly() = runTest {
-        val fake = Fake(mutableListOf(ApiFailure(429, 60000)))
-        assertTrue(runCatching { AiRouter(fake).complete(messages, messages) }.isFailure)
-        assertEquals(1, fake.calls.size)
+    fun longRetryAfterDoesNotPause() = runTest {
+        val fake = Fake(mutableListOf(ApiFailure(429, 60000), valid))
+        val pauses = mutableListOf<Long>()
+        val result = AiRouter(fake) { pauses += it }.complete(messages, messages)
+        assertEquals(valid, result)
+        assertTrue(pauses.isEmpty())
+        assertEquals(listOf(GROQ_PRIMARY, GROQ_FALLBACK), fake.calls.map { it.first })
+    }
+
+    @Test
+    fun threeTierFallbackWorksAcrossAllModels() = runTest {
+        val fake = Fake(mutableListOf(ApiFailure(429, 5000), ApiFailure(429, 5000), valid))
+        val result = AiRouter(fake).complete(messages, messages)
+        assertEquals(valid, result)
+        assertEquals(
+            listOf(GROQ_PRIMARY, GROQ_FALLBACK, GROQ_TERTIARY),
+            fake.calls.map { it.first },
+        )
+    }
+
+    @Test
+    fun rateLimitReportedOnlyAfterAllModelsExhausted() = runTest {
+        val fake =
+            Fake(mutableListOf(ApiFailure(429, 5000), ApiFailure(429, 5000), ApiFailure(429, 5000)))
+        val failure =
+            runCatching { AiRouter(fake).complete(messages, messages) }.exceptionOrNull()!!
+        assertEquals(
+            "AI quota or rate limit reached. Please try again later.",
+            friendlyError(failure),
+        )
+        assertEquals(3, fake.calls.size)
     }
 
     @Test

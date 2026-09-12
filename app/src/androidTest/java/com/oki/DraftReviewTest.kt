@@ -137,7 +137,7 @@ class DraftReviewTest {
         runBlocking { assertTrue(c.tasks.search("Scanned task fixture").isEmpty()) }
         rule.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Date · YYYY-MM-DD *"))
         rule.onNodeWithText("Date · YYYY-MM-DD *").performTextInput("2099-09-11")
-        rule.onNodeWithText("Time · HH:mm *").performTextInput("17:30")
+        rule.onNodeWithText("Start time · HH:mm *").performTextInput("17:30")
         rule.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Save Task"))
         rule.onNodeWithText("Save Task").performClick()
         rule.waitUntil(10000) { saved }

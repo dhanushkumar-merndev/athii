@@ -135,6 +135,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
         draft: String? = null,
         source: String = "IMAGE_SCAN",
         assistantMessageId: String? = null,
+        scanDraftId: String? = null,
     ) {
         val destination = if (doctor) "doctorEdit" else "taskEdit"
         nav.navigate("$destination?id=${id.orEmpty()}")
@@ -142,6 +143,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             draft?.let { set("draft", it) }
             set("draftSource", source)
             assistantMessageId?.let { set("assistantMessageId", it) }
+            scanDraftId?.let { set("scanDraftId", it) }
         }
     }
     LaunchedEffect(openingTask) {
@@ -150,130 +152,116 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             consumeTask()
         }
     }
-    Scaffold(
-        // App bars own their respective vertical insets; content additionally protects cutouts.
-        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        if (primary) "Athii"
-                        else
-                            when {
-                                route.startsWith("taskEdit") -> "Task details"
-                                route.startsWith("doctorEdit") -> "Doctor details"
-                                route.startsWith("doctor/") -> "Doctor"
-                                route.startsWith("scan") -> "Scan image"
-                                else -> "Settings"
-                            },
-                        style = MaterialTheme.typography.titleLarge,
-                    )
-                },
-                navigationIcon = {
-                    if (!primary)
-                        IconButton(onClick = { nav.popBackStack() }) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back")
-                        }
-                },
-                actions = {
-                    if (primary) {
-                        if (route == "assistant")
-                            IconButton(onClick = assistant::showHistory) {
-                                Icon(Icons.Outlined.History, "Chat history")
-                            }
-                        IconButton(onClick = { nav.navigate("settings") }) {
-                            Icon(Icons.Outlined.Settings, "Settings")
-                        }
-                    }
-                },
-                windowInsets =
-                    WindowInsets.safeDrawing.only(
-                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal
-                    ),
-                colors =
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background
-                    ),
-            )
-        },
-        bottomBar = {
-            if (primary) AthiiBottomBar(pager.targetPage) { tab(tabs[it]) }
-            else Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
-        },
-        floatingActionButton = {
-            if (route == "tasks" || route == "doctors")
-                ExtendedFloatingActionButton(
-                    onClick = { add = true },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    icon = { Icon(Icons.Outlined.Add, null) },
-                    text = { Text(if (route == "doctors") "Add doctor" else "Add task") },
-                )
-        },
-    ) { padding ->
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         NavHost(
             nav,
             startDestination = "home",
-            modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
+            modifier = Modifier.fillMaxSize(),
             enterTransition = {
-                slideInHorizontally(tween(220, easing = FastOutSlowInEasing)) { it }
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    tween(280, easing = FastOutSlowInEasing),
+                )
             },
             exitTransition = {
-                // Keep the old screen completely stationary underneath
-                slideOutHorizontally(tween(220)) { 0 }
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    tween(280, easing = FastOutSlowInEasing),
+                )
             },
             popEnterTransition = {
-                // Keep the old screen (now becoming visible again) completely stationary underneath
-                slideInHorizontally(tween(220)) { 0 }
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Right,
+                    tween(280, easing = FastOutSlowInEasing),
+                )
             },
             popExitTransition = {
-                slideOutHorizontally(tween(220, easing = FastOutSlowInEasing)) { it }
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Right,
+                    tween(280, easing = FastOutSlowInEasing),
+                )
             },
         ) {
             composable("home") {
-                HorizontalPager(
-                    state = pager,
-                    modifier = Modifier.fillMaxSize().testTag("main-pager"),
-                    key = { tabs[it] },
-                    beyondViewportPageCount = 1,
-                ) { page ->
-                    when (page) {
-                        0 -> TasksScreen(tasks) { editor(false, it) }
-                        1 -> DoctorsScreen(doctors) { nav.navigate("doctor/$it") }
-                        2 ->
-                            AssistantScreen(
-                                assistant,
-                                { messageId, draft ->
-                                    editor(
-                                        false,
-                                        draft = draft,
-                                        source = "AI_CHAT",
-                                        assistantMessageId = messageId,
-                                    )
+                AthiiScreenFrame(
+                    title = "Athii",
+                    actions = {
+                        if (pager.currentPage == 2) {
+                            IconButton(onClick = assistant::newChat) {
+                                Icon(Icons.Outlined.AddComment, "New chat")
+                            }
+                            IconButton(onClick = assistant::showHistory) {
+                                Icon(Icons.Outlined.History, "Chat history")
+                            }
+                        }
+                        IconButton(
+                            onClick = { nav.navigate("settings") { launchSingleTop = true } }
+                        ) {
+                            Icon(Icons.Outlined.Settings, "Settings")
+                        }
+                    },
+                    bottomBar = { AthiiBottomBar(pager.targetPage) { tab(tabs[it]) } },
+                    floatingActionButton = {
+                        if (pager.currentPage != 2)
+                            ExtendedFloatingActionButton(
+                                onClick = { add = true },
+                                icon = { Icon(Icons.Outlined.Add, null) },
+                                text = {
+                                    Text(if (pager.currentPage == 1) "Add doctor" else "Add task")
                                 },
-                                { messageId, draft ->
-                                    editor(
-                                        true,
-                                        draft = draft,
-                                        source = "AI_CHAT",
-                                        assistantMessageId = messageId,
-                                    )
-                                },
-                                { nav.navigate("settings") },
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
                             )
+                    },
+                ) {
+                    HorizontalPager(
+                        state = pager,
+                        modifier = Modifier.fillMaxSize().testTag("main-pager"),
+                        key = { tabs[it] },
+                        beyondViewportPageCount = 1,
+                    ) { page ->
+                        when (page) {
+                            0 -> TasksScreen(tasks) { editor(false, it) }
+                            1 -> DoctorsScreen(doctors) { nav.navigate("doctor/$it") }
+                            2 ->
+                                AssistantScreen(
+                                    assistant,
+                                    { messageId, draft ->
+                                        editor(
+                                            false,
+                                            draft = draft,
+                                            source = "AI_CHAT",
+                                            assistantMessageId = messageId,
+                                        )
+                                    },
+                                    { messageId, draft ->
+                                        editor(
+                                            true,
+                                            draft = draft,
+                                            source = "AI_CHAT",
+                                            assistantMessageId = messageId,
+                                        )
+                                    },
+                                    { nav.navigate("settings") },
+                                )
+                        }
                     }
                 }
             }
             composable("settings") {
-                SettingsScreen(settings, assistant::clear, { nav.popBackStack("home", false) })
+                AthiiScreenFrame("Settings", { nav.popBackStack() }) {
+                    SettingsScreen(settings, assistant::clear, { nav.popBackStack("home", false) })
+                }
             }
             composable("doctor/{id}") { back ->
-                DoctorDetailScreen(
-                    back.arguments!!.getString("id")!!,
-                    doctors,
-                    { editor(true, back.arguments!!.getString("id")) },
-                    { nav.popBackStack() },
-                )
+                AthiiScreenFrame("Doctor", { nav.popBackStack() }) {
+                    DoctorDetailScreen(
+                        back.arguments!!.getString("id")!!,
+                        doctors,
+                        { editor(true, back.arguments!!.getString("id")) },
+                        { nav.popBackStack() },
+                    )
+                }
             }
             composable(
                 "taskEdit?id={id}",
@@ -299,19 +287,26 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                                 }
                             }
                     )
-                TaskEditorScreen(
-                    vm,
-                    { nav.popBackStack() },
-                    c.publisher::canNotify,
-                    c.reminders::hasExactAccess,
-                    { nav.navigate("settings") },
-                    {
-                        back.savedStateHandle.get<String>("assistantMessageId")?.let {
-                            assistant.markDraftSaved(it)
-                        }
-                        nav.popBackStack()
-                    },
-                )
+                AthiiScreenFrame("Task details", { nav.popBackStack() }) {
+                    TaskEditorScreen(
+                        vm,
+                        { nav.popBackStack() },
+                        c.publisher::canNotify,
+                        c.reminders::hasExactAccess,
+                        { nav.navigate("settings") },
+                        {
+                            back.savedStateHandle.get<String>("assistantMessageId")?.let {
+                                assistant.markDraftSaved(it)
+                            }
+                            back.savedStateHandle.get<String>("scanDraftId")?.let {
+                                nav.previousBackStackEntry
+                                    ?.savedStateHandle
+                                    ?.set("savedScanDraftId", it)
+                            }
+                            nav.popBackStack()
+                        },
+                    )
+                }
             }
             composable(
                 "doctorEdit?id={id}",
@@ -325,24 +320,37 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                                 initializer {
                                     DoctorEditorViewModel(
                                         c,
-                                        createSavedStateHandle(),
+                                        createSavedStateHandle().apply {
+                                            set(
+                                                "draftSource",
+                                                back.savedStateHandle.get<String>("draftSource")
+                                                    ?: "IMAGE_SCAN",
+                                            )
+                                        },
                                         id,
                                         back.savedStateHandle.get<String>("draft"),
                                     )
                                 }
                             }
                     )
-                DoctorEditorScreen(
-                    vm = vm,
-                    editing = id != null,
-                    savedBack = {
-                        back.savedStateHandle.get<String>("assistantMessageId")?.let {
-                            assistant.markDraftSaved(it)
-                        }
-                        nav.popBackStack()
-                    },
-                    back = { nav.popBackStack() },
-                )
+                AthiiScreenFrame("Doctor details", { nav.popBackStack() }) {
+                    DoctorEditorScreen(
+                        vm = vm,
+                        editing = id != null,
+                        savedBack = {
+                            back.savedStateHandle.get<String>("assistantMessageId")?.let {
+                                assistant.markDraftSaved(it)
+                            }
+                            back.savedStateHandle.get<String>("scanDraftId")?.let {
+                                nav.previousBackStackEntry
+                                    ?.savedStateHandle
+                                    ?.set("savedScanDraftId", it)
+                            }
+                            nav.popBackStack()
+                        },
+                        back = { nav.popBackStack() },
+                    )
+                }
             }
             composable("scan/{kind}") { back ->
                 val doctor = back.arguments?.getString("kind") == "doctor"
@@ -359,13 +367,24 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                                 }
                             }
                     )
-                ScanScreen(
-                    vm,
-                    doctor,
-                    { editor(doctor, draft = it) },
-                    { editor(doctor) },
-                    { nav.navigate("settings") },
-                )
+                val savedDraftId by
+                    back.savedStateHandle
+                        .getStateFlow<String?>("savedScanDraftId", null)
+                        .collectAsStateWithLifecycle()
+                LaunchedEffect(savedDraftId) {
+                    savedDraftId?.let {
+                        vm.markSaved(it)
+                        back.savedStateHandle["savedScanDraftId"] = null
+                    }
+                }
+                AthiiScreenFrame("Scan image", { nav.popBackStack() }) {
+                    ScanScreen(
+                        vm,
+                        doctor,
+                        { draftId, draft -> editor(doctor, draft = draft, scanDraftId = draftId) },
+                        { editor(doctor) },
+                    )
+                }
             }
         }
     }
@@ -415,4 +434,49 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                 }
             }
         }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AthiiScreenFrame(
+    title: String,
+    back: (() -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+    bottomBar: @Composable () -> Unit = {
+        Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+    },
+    floatingActionButton: @Composable () -> Unit = {},
+    content: @Composable () -> Unit,
+) {
+    // Each destination owns a stable, opaque frame, so bars travel with its content.
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
+        topBar = {
+            TopAppBar(
+                title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+                navigationIcon = {
+                    back?.let {
+                        IconButton(onClick = it) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back")
+                        }
+                    }
+                },
+                actions = actions,
+                windowInsets =
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                    ),
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background
+                    ),
+            )
+        },
+        bottomBar = bottomBar,
+        floatingActionButton = floatingActionButton,
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { content() }
+    }
 }

@@ -9,11 +9,12 @@ import kotlinx.serialization.json.*
 
 const val GROQ_PRIMARY = "openai/gpt-oss-120b"
 const val GROQ_FALLBACK = "openai/gpt-oss-20b"
+const val GROQ_TERTIARY = "qwen/qwen3.6-27b"
+val GROQ_MODELS = listOf(GROQ_PRIMARY, GROQ_FALLBACK, GROQ_TERTIARY)
 const val GEMINI_PRIMARY = "gemini-3.5-flash"
 const val GEMINI_FALLBACK = "gemini-3.5-flash-lite"
 const val GEMINI_MODEL = GEMINI_PRIMARY
-val GEMINI_VISION_MODELS =
-    listOf(GEMINI_PRIMARY, GEMINI_FALLBACK, "gemini-3.1-flash-lite", "gemini-3.7-flash")
+val GEMINI_VISION_MODELS = listOf(GEMINI_PRIMARY, GEMINI_FALLBACK)
 val aiJson = Json {
     ignoreUnknownKeys = true
     explicitNulls = false
@@ -67,30 +68,46 @@ class AiRouter(
         reasoningEffort: ReasoningEffort = ReasoningEffort.HIGH,
     ): JsonObject {
         var repair = false
-        try {
-            return validated(
-                transport.complete(GROQ_PRIMARY, messages, tools, false, reasoningEffort)
-            )
-        } catch (e: Exception) {
-            if (!transient(e)) throw e
-            repair = e is MalformedResult
-            if (e is ApiFailure && e.retryAfterMs > 3000) throw e
-            if (e is ApiFailure && e.retryAfterMs > 0) pause(e.retryAfterMs)
-            if (e is SocketTimeoutException || e is MalformedResult) {
-                try {
-                    return validated(
-                        transport.complete(GROQ_PRIMARY, messages, tools, repair, reasoningEffort)
-                    )
-                } catch (retry: Exception) {
-                    if (!transient(retry)) throw retry
-                    if (retry is ApiFailure && retry.retryAfterMs > 3000) throw retry
-                    if (retry is ApiFailure && retry.retryAfterMs > 0) pause(retry.retryAfterMs)
+        var lastException: Exception? = null
+
+        for (model in GROQ_MODELS) {
+            try {
+                return validated(
+                    transport.complete(model, messages, tools, repair, reasoningEffort)
+                )
+            } catch (e: Exception) {
+                if (!transient(e)) throw e
+                lastException = e
+                repair = e is MalformedResult
+
+                if (e is ApiFailure && e.status == 429) {
+                    if (e.retryAfterMs in 1..3000) {
+                        pause(e.retryAfterMs)
+                    }
+                    continue
+                }
+
+                if (e is SocketTimeoutException || e is MalformedResult) {
+                    try {
+                        return validated(
+                            transport.complete(model, messages, tools, repair, reasoningEffort)
+                        )
+                    } catch (retry: Exception) {
+                        if (!transient(retry)) throw retry
+                        lastException = retry
+                        if (
+                            retry is ApiFailure &&
+                                retry.status == 429 &&
+                                retry.retryAfterMs in 1..3000
+                        ) {
+                            pause(retry.retryAfterMs)
+                        }
+                    }
                 }
             }
         }
-        return validated(
-            transport.complete(GROQ_FALLBACK, messages, tools, repair, reasoningEffort)
-        )
+
+        throw lastException ?: MalformedResult()
     }
 
     suspend fun test(model: String) {

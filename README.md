@@ -28,20 +28,20 @@ This script explicitly targets the emulator, never another connected device. Tes
 
 ## Features
 
-- Tasks: manual creation, editing, completion, confirmed deletion, search, date/time pickers, default 5-minute reminders, per-task overrides, explicit handling of past reminder times.
+- Tasks: manual creation, editing, completion, confirmed deletion, search, one required start date/time and an optional later same-day end time. New tasks notify at the start; end notifications include the task title. Previously saved reminder offsets remain intact until edited.
 - Local reminders: AlarmManager, independent pending intents and notification tags, Mark Done/Snooze actions, exact-access explanation, notification permission recovery, boot/update/time-change restoration.
-- Sounds: system/default, silent, validated custom audio of at most 5 seconds, preview/stop/reset, private retained audio copies, immutable versioned notification channels. No DND policy access, alarm audio stream, forced playback, or bypass.
+- Sounds: normal notification mode supports system/default, silent, or validated custom audio of at most 5 seconds. Optional Alarm mode rings inside Athii at the task start, with Stop and Snooze; it uses the device alarm sound/volume and a separate native Android channel. Athii never changes device volume or requests DND bypass. End alerts remain normal notifications.
 - Doctors: all requested fields, manual and scanned creation, details, full editing with stable IDs, confirmed deletion, search, department/day/attendance filters, deliberate Present/Absent changes.
 - Attendance: local midnight reset, transactional reset-date marker, startup/reboot/timezone recovery, foreground self-healing. Only attendance fields are reset; edited doctor details remain intact.
 - Scan: CameraX and system Photo Picker, bounded decoding/EXIF correction/compression, preview, cancel/retry/manual fallback, multiple structured drafts. No extraction can save itself.
-- Ask AI: Groq primary/fallback routing, bounded retry/repair, allowlisted local read tools, fresh retrieval per question, and reviewable task drafts.
+- Ask AI: Groq primary/fallback routing, bounded retry/repair, allowlisted local read tools, and multiple reviewable task/doctor drafts. Each draft tracks its own created state. History persists locally; opening the app starts a fresh chat and the History icon switches conversations. Athii knows the user's name is Yukthi and replies conversationally.
 - Settings: Keystore-encrypted credentials, separate primary/fallback diagnostics, appearance, reminder settings, clear completed/chat/all-data with confirmation.
 
 ## AI setup and privacy
 
-Enter your own credentials in **Settings → AI Configuration**:
+Manage credentials in **Settings → AI connections**:
 
-- Gemini image extraction: `gemini-3.5-flash` (fallback: `gemini-3.5-flash-lite`)
+- Groq image extraction: `qwen/qwen3.6-27b`, then Gemini `gemini-3.5-flash` and `gemini-3.5-flash-lite` as bounded fallbacks. Unavailable providers are skipped; incomplete token-limited responses are not shown as complete batches.
 - Groq primary: `openai/gpt-oss-120b`
 - Groq fallback: `openai/gpt-oss-20b`
 
@@ -55,7 +55,7 @@ This opt-in task reads `.env` locally (`GOOGLE_API`/`GEMINI_API_KEY` and `GROK_A
 
 **APK encryption is obfuscation, not a guarantee of secrecy.** The certificate is public and the client contains the decryption logic, so a determined reverse engineer can recover bundled credentials. Share the personal APK only with its intended recipient. The signed, optimized release removes debugging support and applies R8 obfuscation. No backend is introduced.
 
-There is no login, backend, remote database, sync, analytics, advertising, or telemetry. Android backup and device transfer are disabled. Network transport is limited to Google Gemini and Groq HTTPS endpoints, with redirects disabled and no request/body logging. Scanning sends the selected prepared image. Chat sends the question and up to 20 matching records per search (10 upcoming tasks), with bounded tool rounds. Conversation display is memory-only; previous answers are not reused as a cache of current records. Each question should be self-contained.
+There is no login, backend, remote database, sync, analytics, advertising, or telemetry. Android backup and device transfer are disabled. Network transport is limited to Google Gemini and Groq HTTPS endpoints, with redirects disabled and no request/body logging. Scanning sends the selected prepared image. Chat sends the current conversation's recent messages and review states, plus up to 20 matching records per search (10 upcoming tasks), with bounded tool rounds. Other conversations are excluded. Previous answers are context; fresh local queries determine current records. Chat history is stored in an atomic app-private file and can be cleared in Settings.
 
 AI extraction and chat are fallible. Every extracted field is explicitly marked for review; unknown values stay blank. The AI tool layer exposes no save/delete/attendance operations. A task suggestion only opens an editable draft.
 
@@ -71,7 +71,7 @@ Custom sounds are validated and copied into private storage, so they survive rem
 
 ## Architecture
 
-`core/` owns Room/DataStore, encrypted credentials, network transport, notification delivery, scheduling, and shared theme/components. Feature packages own repositories, feature-specific ViewModels, and Compose screens. Screens do not access DAOs or HTTP clients. Room schema version 1 is exported under `app/schemas/`; future schema changes must supply migrations, never destructive fallback.
+`core/` owns Room/DataStore, encrypted credentials, network transport, notification delivery, scheduling, and shared theme/components. Feature packages own repositories, feature-specific ViewModels, and Compose screens. Screens do not access DAOs or HTTP clients. Room schema versions are exported under `app/schemas/`; migrations preserve existing tasks and doctors without destructive fallback.
 
 ## Verification
 

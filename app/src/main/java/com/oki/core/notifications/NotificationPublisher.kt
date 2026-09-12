@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import com.oki.MainActivity
 import com.oki.R
 import com.oki.core.storage.*
+import com.oki.feature.tasks.TaskNotificationKind
 import java.security.MessageDigest
 import java.time.*
 import java.time.format.DateTimeFormatter
@@ -30,11 +31,46 @@ object ChannelIdentity {
                         .joinToString("") { "%02x".format(it) }
         }
 
-    fun notificationTag(taskId: String) = "task:$taskId"
+    fun notificationTag(taskId: String, kind: TaskNotificationKind = TaskNotificationKind.START) =
+        "task:$taskId" + if (kind == TaskNotificationKind.END) ":end" else ""
 }
 
 class NotificationPublisher(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
+
+    companion object {
+        const val ALARM_CHANNEL = "task_alarms_v1"
+        const val ALARM_TIMEOUT_MS = 300_000L
+    }
+
+    fun canShowFullScreenAlarm(): Boolean =
+        Build.VERSION.SDK_INT < 34 || manager.canUseFullScreenIntent()
+
+    fun alarmChannel(): String {
+        manager.createNotificationChannel(
+            NotificationChannel(ALARM_CHANNEL, "Task alarms", NotificationManager.IMPORTANCE_HIGH)
+                .apply {
+                    description =
+                        "Alarms you choose for task start times. Uses the device alarm volume."
+                    setSound(
+                        AndroidSettings.System.DEFAULT_ALARM_ALERT_URI,
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    enableVibration(true)
+                    setBypassDnd(false)
+                }
+        )
+        return ALARM_CHANNEL
+    }
+
+    fun isAlarmActive(id: String): Boolean =
+        manager.activeNotifications.any {
+            it.tag == ChannelIdentity.notificationTag(id) &&
+                it.notification.channelId == ALARM_CHANNEL
+        }
 
     fun canNotify(): Boolean =
         manager.areNotificationsEnabled() &&
@@ -87,8 +123,16 @@ class NotificationPublisher(private val context: Context) {
         return id
     }
 
-    fun publish(task: Task, settings: Settings) {
+    fun publish(
+        task: Task,
+        settings: Settings,
+        kind: TaskNotificationKind = TaskNotificationKind.START,
+    ) {
         if (!canNotify()) return
+        if (kind == TaskNotificationKind.START && task.alertMode == TaskAlertMode.ALARM) {
+            publishAlarm(task)
+            return
+        }
         val open =
             PendingIntent.getActivity(
                 context,
@@ -98,19 +142,27 @@ class NotificationPublisher(private val context: Context) {
                     .putExtra("task_id", task.id),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+        val time =
+            if (kind == TaskNotificationKind.END) task.scheduledEndReminderAt ?: task.dueAt
+            else task.dueAt
         val due =
-            Instant.ofEpochMilli(task.dueAt)
+            Instant.ofEpochMilli(time)
                 .atZone(ZoneId.systemDefault())
                 .format(DateTimeFormatter.ofPattern("EEE, d MMM · h:mm a"))
-        val notification =
+        val summary =
+            if (kind == TaskNotificationKind.END) "${task.title} · Ended $due" else "Starts $due"
+        val builder =
             NotificationCompat.Builder(context, channel(settings))
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(task.title)
-                .setContentText(due)
+                .setContentTitle(
+                    if (kind == TaskNotificationKind.END) "Task time is over: ${task.title}"
+                    else task.title
+                )
+                .setContentText(summary)
                 .setStyle(
                     NotificationCompat.BigTextStyle()
                         .bigText(
-                            listOf(due, task.notes.take(240))
+                            listOf(summary, task.notes.take(240))
                                 .filter { it.isNotBlank() }
                                 .joinToString("\n")
                         )
@@ -120,12 +172,46 @@ class NotificationPublisher(private val context: Context) {
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .addAction(0, "Mark done", action(task.id, "done"))
+        if (kind == TaskNotificationKind.START)
+            builder.addAction(0, "Snooze 5 min", action(task.id, "snooze"))
+        try {
+            manager.notify(ChannelIdentity.notificationTag(task.id, kind), 0, builder.build())
+        } catch (_: SecurityException) {
+            /* permission revoked between check and publish */
+        }
+    }
+
+    private fun publishAlarm(task: Task) {
+        val open =
+            PendingIntent.getActivity(
+                context,
+                0,
+                Intent(context, AlarmActivity::class.java)
+                    .setData(Uri.parse("oki://alarm/${task.id}"))
+                    .putExtra("task_id", task.id)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        val builder =
+            NotificationCompat.Builder(context, alarmChannel())
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(task.title)
+                .setContentText("Time to start · Stop or snooze your alarm")
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setContentIntent(open)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setTimeoutAfter(ALARM_TIMEOUT_MS)
+                .addAction(0, "Stop", action(task.id, "stop"))
                 .addAction(0, "Snooze 5 min", action(task.id, "snooze"))
-                .build()
+        if (canShowFullScreenAlarm()) builder.setFullScreenIntent(open, true)
+        val notification = builder.build().apply { flags = flags or Notification.FLAG_INSISTENT }
         try {
             manager.notify(ChannelIdentity.notificationTag(task.id), 0, notification)
         } catch (_: SecurityException) {
-            /* permission revoked between check and publish */
+            // Notification access can change while the alarm is being delivered.
         }
     }
 
@@ -141,6 +227,11 @@ class NotificationPublisher(private val context: Context) {
         )
 
     fun dismiss(id: String) {
+        dismissStart(id)
+        manager.cancel(ChannelIdentity.notificationTag(id, TaskNotificationKind.END), 0)
+    }
+
+    fun dismissStart(id: String) {
         manager.cancel(ChannelIdentity.notificationTag(id), 0)
     }
 

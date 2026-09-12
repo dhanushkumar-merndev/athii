@@ -2,6 +2,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
@@ -12,6 +13,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".core.notifications.AlarmActivity" android:exported="false" android:launchMode="singleTask" android:taskAffinity="${applicationId}.alarm" android:excludeFromRecents="true" android:showWhenLocked="true" android:turnScreenOn="true" />
         <receiver android:name=".core.notifications.ReminderReceiver" android:exported="false" />
         <receiver android:name=".core.notifications.RecoveryReceiver" android:exported="false">
             <intent-filter>

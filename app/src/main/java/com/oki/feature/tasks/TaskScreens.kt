@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oki.core.storage.Task
+import com.oki.core.storage.TaskAlertMode
 import com.oki.core.ui.*
 import java.time.*
 
@@ -183,32 +184,22 @@ fun TasksScreen(vm: TasksViewModel, edit: (String) -> Unit) {
                                 textDecoration =
                                     if (task.isCompleted) TextDecoration.LineThrough else null,
                             )
-                            val scheduleWindow =
-                                when {
-                                    !task.startTime.isNullOrBlank() &&
-                                        !task.endTime.isNullOrBlank() ->
-                                        "${task.startTime} – ${task.endTime}"
-                                    !task.startTime.isNullOrBlank() -> "Starts ${task.startTime}"
-                                    !task.endTime.isNullOrBlank() -> "Ends ${task.endTime}"
-                                    else -> null
-                                }
-                            if (scheduleWindow != null) {
-                                Text(
-                                    "Schedule · $scheduleWindow",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            }
                             Text(
-                                displayDate(task.dueAt),
+                                "Starts ${displayDate(task.dueAt)}" +
+                                    task.endTime
+                                        ?.takeIf(String::isNotBlank)
+                                        ?.let { " · Ends $it" }
+                                        .orEmpty(),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (task.reminderEnabled && !task.isCompleted)
                                 Text(
                                     if (task.scheduledReminderAt != null)
-                                        "Reminder · ${displayDate(task.scheduledReminderAt)}"
-                                    else "Reminder delivered or expired",
+                                        "${if (task.alertMode == TaskAlertMode.ALARM) "Alarm" else "Start notification"} · ${displayDate(task.scheduledReminderAt)}"
+                                    else if (task.scheduledEndReminderAt != null)
+                                        "End notification · ${displayDate(task.scheduledEndReminderAt)}"
+                                    else "Notifications delivered or expired",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.secondary,
                                 )
@@ -281,12 +272,20 @@ fun TaskEditorScreen(
     val autocomplete by vm.autocomplete.collectAsStateWithLifecycle()
     var pastDialog by remember { mutableStateOf(false) }
     var permissionWarning by remember { mutableStateOf(false) }
+    var alarmAccessWarning by remember { mutableStateOf(false) }
     val notificationRequest =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
             permissionWarning = true
         }
     LaunchedEffect(saved) { if (saved) savedBack() }
     fun save() {
+        if (
+            form?.let { it.reminder && it.alertMode == TaskAlertMode.ALARM } == true &&
+                (!notificationsAllowed() || !exactAllowed())
+        ) {
+            alarmAccessWarning = true
+            return
+        }
         if (vm.reminderInPast()) pastDialog = true else vm.save()
     }
     val f = form
@@ -333,19 +332,18 @@ fun TaskEditorScreen(
             )
         }
         item {
-            ScheduleWindowFields(
-                startTime = f.startTime,
-                endTime = f.endTime,
-                startTimeChange = { vm.change(f.copy(startTime = it)) },
-                endTimeChange = { vm.change(f.copy(endTime = it)) },
-            )
+            EndTimeField(endTime = f.endTime, endTimeChange = { vm.change(f.copy(endTime = it)) })
         }
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Remind me", style = MaterialTheme.typography.titleMedium)
+                    Text("Task alert", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "A quiet nudge at the right time",
+                        if (f.alertMode == TaskAlertMode.ALARM)
+                            "Ring at the start time. Stop or snooze inside Athii."
+                        else if (f.endTime.isBlank())
+                            "Notify at the start time, with your notification sound."
+                        else "Notify at the start and when the task time is over.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -355,29 +353,39 @@ fun TaskEditorScreen(
         }
         if (f.reminder) {
             item {
-                Field(
-                    "Minutes before (0 = at task time)",
-                    f.offset,
-                    { vm.change(f.copy(offset = it)) },
-                )
-            }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0, 5, 15, 30, 60).forEach {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TaskAlertMode.entries.forEach { mode ->
                         FilterChip(
-                            f.offset == it.toString(),
-                            { vm.change(f.copy(offset = it.toString())) },
-                            label = { Text(if (it == 0) "At time" else "${it}m") },
+                            selected = f.alertMode == mode,
+                            onClick = { vm.change(f.copy(alertMode = mode)) },
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            label = {
+                                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        if (mode == TaskAlertMode.ALARM) "Alarm" else "Notification"
+                                    )
+                                }
+                            },
                         )
                     }
                 }
+                if (f.alertMode == TaskAlertMode.ALARM)
+                    Text(
+                        "Uses your phone’s alarm volume. An optional end time sends a normal notification.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
             }
             if (!exactAllowed())
                 item {
                     SuggestionCard(
-                        "Exact alarm access is off. Reminders may arrive late, and midnight reset will recover when Android wakes Athii."
+                        if (f.alertMode == TaskAlertMode.ALARM)
+                            "Allow on-time alerts in Settings before saving an alarm."
+                        else
+                            "Android may delay notifications. Allow on-time notifications in Settings to use the times you choose."
                     )
-                    TextButton(onClick = settings) { Text("Reminder settings") }
+                    TextButton(onClick = settings) { Text("Notification settings") }
                 }
         }
         item { ErrorBanner(error) }
@@ -404,16 +412,39 @@ fun TaskEditorScreen(
         }
         item { TextButton(onClick = back, modifier = Modifier.fillMaxWidth()) { Text("Cancel") } }
     }
+    if (alarmAccessWarning)
+        AlertDialog(
+            onDismissRequest = { alarmAccessWarning = false },
+            title = { Text("Enable alarm access") },
+            text = {
+                Text(
+                    "Alarms need notification permission and on-time alert access. Enable them in Settings, then save your task."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        alarmAccessWarning = false
+                        settings()
+                    }
+                ) {
+                    Text("Open settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { alarmAccessWarning = false }) { Text("Cancel") }
+            },
+        )
     if (permissionWarning)
         AlertDialog(
             onDismissRequest = { permissionWarning = false },
-            title = { Text("Reminder notifications") },
+            title = { Text("Task notifications") },
             text = {
                 Text(
                     if (notificationsAllowed())
-                        "Notifications are enabled. Save your task to schedule the reminder."
+                        "Notifications are enabled. Save your task to schedule its start and optional end notification."
                     else
-                        "Notifications are blocked in Android settings. Your task can still be saved, but reminders cannot appear until notifications are enabled."
+                        "Notifications are blocked in Android settings. Your task can still be saved, but notifications cannot appear until they are enabled."
                 )
             },
             confirmButton = {
@@ -440,8 +471,14 @@ fun TaskEditorScreen(
     if (pastDialog)
         AlertDialog(
             onDismissRequest = { pastDialog = false },
-            title = { Text("Reminder time has passed") },
-            text = { Text("Notify now, change the date or offset, or save without a reminder.") },
+            title = { Text("Start time has passed") },
+            text = {
+                Text(
+                    if (f.alertMode == TaskAlertMode.ALARM)
+                        "Ring now, change the start date or time, or save without an alert."
+                    else "Notify now, change the start date or time, or save without notifications."
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -449,7 +486,7 @@ fun TaskEditorScreen(
                         vm.save(notifyNow = true)
                     }
                 ) {
-                    Text("Notify now")
+                    Text(if (f.alertMode == TaskAlertMode.ALARM) "Ring now" else "Notify now")
                 }
             },
             dismissButton = {
@@ -460,9 +497,9 @@ fun TaskEditorScreen(
                             vm.save(withoutReminder = true)
                         }
                     ) {
-                        Text("Save without reminder")
+                        Text("Save without notifications")
                     }
-                    TextButton(onClick = { pastDialog = false }) { Text("Change time / offset") }
+                    TextButton(onClick = { pastDialog = false }) { Text("Change start time") }
                 }
             },
         )
@@ -491,9 +528,10 @@ fun DateTimeFields(
     val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Field("Date · YYYY-MM-DD *", date, dateChange)
-        Field("Time · HH:mm *", time, timeChange)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Field("Start time · HH:mm *", time, timeChange)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
+                modifier = Modifier.weight(1f),
                 onClick = {
                     val d = runCatching { LocalDate.parse(date) }.getOrDefault(LocalDate.now())
                     DatePickerDialog(
@@ -504,13 +542,14 @@ fun DateTimeFields(
                             d.dayOfMonth,
                         )
                         .show()
-                }
+                },
             ) {
                 Icon(Icons.Outlined.CalendarToday, null, Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Pick date")
             }
             OutlinedButton(
+                modifier = Modifier.weight(1f),
                 onClick = {
                     val t = runCatching { LocalTime.parse(time) }.getOrDefault(LocalTime.now())
                     TimePickerDialog(
@@ -521,59 +560,29 @@ fun DateTimeFields(
                             android.text.format.DateFormat.is24HourFormat(context),
                         )
                         .show()
-                }
+                },
             ) {
                 Icon(Icons.Outlined.Schedule, null, Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Pick time")
+                Text("Pick start")
             }
         }
     }
 }
 
 @Composable
-fun ScheduleWindowFields(
-    startTime: String,
-    endTime: String,
-    startTimeChange: (String) -> Unit,
-    endTimeChange: (String) -> Unit,
-) {
+fun EndTimeField(endTime: String, endTimeChange: (String) -> Unit) {
     val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionLabel("SCHEDULE WINDOW (OPTIONAL)")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Field(
-                label = "Start time (optional)",
-                value = startTime,
-                change = startTimeChange,
-                modifier = Modifier.weight(1f),
-            )
-            Field(
-                label = "End time (optional)",
-                value = endTime,
-                change = endTimeChange,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Field("End time · HH:mm (optional)", endTime, endTimeChange)
+        Text(
+            "Choose a later time on the same date to receive a task-ended notification.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
-                onClick = {
-                    val t = runCatching { LocalTime.parse(startTime) }.getOrDefault(LocalTime.now())
-                    TimePickerDialog(
-                            context,
-                            { _, h, m -> startTimeChange("%02d:%02d".format(h, m)) },
-                            t.hour,
-                            t.minute,
-                            android.text.format.DateFormat.is24HourFormat(context),
-                        )
-                        .show()
-                }
-            ) {
-                Icon(Icons.Outlined.Schedule, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Pick start")
-            }
-            OutlinedButton(
+                modifier = Modifier.weight(1f),
                 onClick = {
                     val t =
                         runCatching { LocalTime.parse(endTime) }
@@ -586,19 +595,14 @@ fun ScheduleWindowFields(
                             android.text.format.DateFormat.is24HourFormat(context),
                         )
                         .show()
-                }
+                },
             ) {
                 Icon(Icons.Outlined.Schedule, null, Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Pick end")
             }
-            if (startTime.isNotBlank() || endTime.isNotBlank()) {
-                TextButton(
-                    onClick = {
-                        startTimeChange("")
-                        endTimeChange("")
-                    }
-                ) {
+            if (endTime.isNotBlank()) {
+                TextButton(modifier = Modifier.weight(1f), onClick = { endTimeChange("") }) {
                     Text("Clear")
                 }
             }

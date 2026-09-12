@@ -4,7 +4,14 @@ import com.oki.core.storage.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+enum class TaskNotificationKind {
+    START,
+    END,
+}
+
 interface ReminderScheduler {
+    fun validate(task: Task) {}
+
     fun schedule(task: Task)
 
     fun cancel(id: String)
@@ -29,21 +36,37 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
     suspend fun save(task: Task, notifyNow: Boolean = false) =
         mutex.withLock {
             require(task.title.isNotBlank()) { "Enter a task title." }
+            scheduler.validate(task)
             val now = System.currentTimeMillis()
+            val end = TimeRules.endAt(task.dueAt, task.endTime)
             val at =
                 if (task.reminderEnabled && !task.isCompleted) {
                     if (notifyNow) now + 1000
                     else
-                        TimeRules.reminderAt(task.dueAt, task.reminderOffsetMinutes).also {
-                            require(it > now) {
-                                "The reminder time has passed. Choose Notify now or save without a reminder."
+                        TimeRules.reminderAt(
+                                task.dueAt,
+                                if (task.alertMode == TaskAlertMode.ALARM) 0
+                                else task.reminderOffsetMinutes,
+                            )
+                            .also {
+                                require(it > now) {
+                                    "The start time has passed. Choose Notify now or save without notifications."
+                                }
                             }
-                        }
                 } else null
             val previous = dao.get(task.id)
             scheduler.cancel(task.id)
             val saved =
-                task.copy(title = task.title.trim(), scheduledReminderAt = at, updatedAt = now)
+                task.copy(
+                    title = task.title.trim(),
+                    reminderOffsetMinutes =
+                        if (task.alertMode == TaskAlertMode.ALARM) 0
+                        else task.reminderOffsetMinutes,
+                    scheduledReminderAt = at,
+                    scheduledEndReminderAt =
+                        end?.takeIf { task.reminderEnabled && !task.isCompleted && it > now },
+                    updatedAt = now,
+                )
             try {
                 dao.put(saved)
             } catch (e: Exception) {
@@ -57,6 +80,7 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
     suspend fun complete(id: String, completed: Boolean) =
         mutex.withLock {
             val task = dao.get(id) ?: return@withLock
+            if (!completed) scheduler.validate(task.copy(isCompleted = false))
             scheduler.cancel(id)
             scheduler.dismiss(id)
             val candidate = TimeRules.reminderAt(task.dueAt, task.reminderOffsetMinutes)
@@ -71,6 +95,12 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                                 candidate > System.currentTimeMillis()
                         )
                             candidate
+                        else null,
+                    scheduledEndReminderAt =
+                        if (!completed && task.reminderEnabled)
+                            runCatching { TimeRules.endAt(task.dueAt, task.endTime) }
+                                .getOrNull()
+                                ?.takeIf { it > System.currentTimeMillis() }
                         else null,
                     updatedAt = System.currentTimeMillis(),
                 )
@@ -101,14 +131,29 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
             }
         }
 
-    suspend fun deliver(id: String, expectedAt: Long, publish: suspend (Task) -> Unit) =
+    suspend fun deliver(
+        id: String,
+        expectedAt: Long,
+        kind: TaskNotificationKind = TaskNotificationKind.START,
+        publish: suspend (Task) -> Unit,
+    ) =
         mutex.withLock {
             val task = dao.get(id) ?: return@withLock
-            if (task.isCompleted || !task.reminderEnabled || task.scheduledReminderAt != expectedAt)
+            val scheduledAt =
+                when (kind) {
+                    TaskNotificationKind.START -> task.scheduledReminderAt
+                    TaskNotificationKind.END -> task.scheduledEndReminderAt
+                }
+            if (task.isCompleted || !task.reminderEnabled || scheduledAt != expectedAt)
                 return@withLock
             if (expectedAt > System.currentTimeMillis() + 1000) return@withLock
             publish(task)
-            dao.put(task.copy(scheduledReminderAt = null))
+            dao.put(
+                when (kind) {
+                    TaskNotificationKind.START -> task.copy(scheduledReminderAt = null)
+                    TaskNotificationKind.END -> task.copy(scheduledEndReminderAt = null)
+                }
+            )
         }
 
     suspend fun snooze(id: String, minutes: Int = 5) =
@@ -121,6 +166,7 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                     scheduledReminderAt = System.currentTimeMillis() + minutes * 60_000L,
                     updatedAt = System.currentTimeMillis(),
                 )
+            scheduler.validate(updated)
             scheduler.cancel(id)
             scheduler.dismiss(id)
             dao.put(updated)

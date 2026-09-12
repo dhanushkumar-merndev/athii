@@ -1,0 +1,247 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "0a34595316752023c5c3ba63c063b34f",
+    "entities": [
+      {
+        "tableName": "tasks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `notes` TEXT NOT NULL, `dueAt` INTEGER NOT NULL, `timeZoneIdAtCreation` TEXT NOT NULL, `reminderEnabled` INTEGER NOT NULL, `reminderOffsetMinutes` INTEGER NOT NULL, `scheduledReminderAt` INTEGER, `scheduledEndReminderAt` INTEGER, `isCompleted` INTEGER NOT NULL, `completedAt` INTEGER, `startTime` TEXT, `endTime` TEXT, `source` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dueAt",
+            "columnName": "dueAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeZoneIdAtCreation",
+            "columnName": "timeZoneIdAtCreation",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reminderEnabled",
+            "columnName": "reminderEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reminderOffsetMinutes",
+            "columnName": "reminderOffsetMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scheduledReminderAt",
+            "columnName": "scheduledReminderAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "scheduledEndReminderAt",
+            "columnName": "scheduledEndReminderAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "isCompleted",
+            "columnName": "isCompleted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "completedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "startTime",
+            "columnName": "startTime",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "endTime",
+            "columnName": "endTime",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "doctors",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `doctorName` TEXT NOT NULL, `qualification` TEXT NOT NULL, `department` TEXT NOT NULL, `roomOrOpdNumber` TEXT NOT NULL, `availableFrom` TEXT NOT NULL, `availableUntil` TEXT NOT NULL, `workingDays` TEXT NOT NULL, `hospitalOrClinic` TEXT NOT NULL, `phone` TEXT NOT NULL, `notes` TEXT NOT NULL, `attendanceStatus` TEXT NOT NULL, `attendanceChangedAt` INTEGER, `source` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "doctorName",
+            "columnName": "doctorName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "qualification",
+            "columnName": "qualification",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "department",
+            "columnName": "department",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "roomOrOpdNumber",
+            "columnName": "roomOrOpdNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "availableFrom",
+            "columnName": "availableFrom",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "availableUntil",
+            "columnName": "availableUntil",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "workingDays",
+            "columnName": "workingDays",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hospitalOrClinic",
+            "columnName": "hospitalOrClinic",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "phone",
+            "columnName": "phone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attendanceStatus",
+            "columnName": "attendanceStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attendanceChangedAt",
+            "columnName": "attendanceChangedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "maintenance",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`key` TEXT NOT NULL, `value` TEXT NOT NULL, PRIMARY KEY(`key`))",
+        "fields": [
+          {
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "value",
+            "columnName": "value",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "key"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0a34595316752023c5c3ba63c063b34f')"
+    ]
+  }
+}

@@ -84,7 +84,7 @@ interface MaintenanceDao {
 
 @Database(
     entities = [Task::class, Doctor::class, Maintenance::class],
-    version = 2,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -96,6 +96,24 @@ abstract class OkiDatabase : RoomDatabase() {
     abstract fun maintenance(): MaintenanceDao
 
     companion object {
+        val MIGRATION_3_4 =
+            object : Migration(3, 4) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "ALTER TABLE tasks ADD COLUMN alertMode TEXT NOT NULL DEFAULT 'NOTIFICATION'"
+                    )
+                }
+            }
+
+        val MIGRATION_2_3 =
+            object : Migration(2, 3) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "ALTER TABLE tasks ADD COLUMN scheduledEndReminderAt INTEGER DEFAULT NULL"
+                    )
+                }
+            }
+
         val MIGRATION_1_2 =
             object : Migration(1, 2) {
                 override fun migrate(db: SupportSQLiteDatabase) {

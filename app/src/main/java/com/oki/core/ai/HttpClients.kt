@@ -137,9 +137,11 @@ class GroqChatClient(private val credentials: SecureCredentialStore, private val
                 else messages,
             )
             put("temperature", 0.2)
-            put("max_completion_tokens", 2048)
-            put("reasoning_effort", reasoningEffort.name.lowercase())
-            put("include_reasoning", false)
+            put("max_completion_tokens", if (tools.isNotEmpty()) 8192 else 2048)
+            if (model.contains("oss")) {
+                put("reasoning_effort", reasoningEffort.name.lowercase())
+                put("include_reasoning", false)
+            }
             if (tools.isNotEmpty()) {
                 put("tools", tools)
                 put("tool_choice", "auto")
@@ -154,7 +156,10 @@ class GroqChatClient(private val credentials: SecureCredentialStore, private val
                 body,
             )
         return try {
-            response["choices"]!!.jsonArray.first().jsonObject["message"]!!.jsonObject
+            val choice = response["choices"]!!.jsonArray.first().jsonObject
+            if (choice["finish_reason"]?.jsonPrimitive?.contentOrNull == "length")
+                throw MalformedResult()
+            choice["message"]!!.jsonObject
         } catch (_: Exception) {
             throw MalformedResult()
         }

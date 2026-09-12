@@ -28,25 +28,9 @@ import androidx.lifecycle.viewModelScope
 import com.oki.AppContainer
 import com.oki.core.ai.*
 import com.oki.core.ui.*
-import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.encodeToString
-
-data class ChatMessage(
-    val id: String = UUID.randomUUID().toString(),
-    val text: String,
-    val user: Boolean,
-    val taskDraft: TaskDraft? = null,
-    val doctorDraft: DoctorDraft? = null,
-    val draftSaved: Boolean = false,
-)
-
-data class ChatConversation(
-    val id: String = UUID.randomUUID().toString(),
-    val title: String,
-    val messages: List<ChatMessage> = emptyList(),
-)
 
 class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewModel() {
     private val conversationStore = MutableStateFlow<List<ChatConversation>>(emptyList())
@@ -61,50 +45,86 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
     val busy = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
     val historyVisible = MutableStateFlow(false)
+    val historyReady = MutableStateFlow(false)
     private var job: Job? = null
+    private var requestVersion = 0L
+    private var locallyChanged = false
+
+    init {
+        viewModelScope.launch {
+            try {
+                val saved = c.chatHistory.read()
+                if (!locallyChanged) conversationStore.value = saved
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                error.value =
+                    "Could not open saved chats. Your tasks and doctors are still available."
+                historyReady.value = true
+                return@launch
+            }
+            historyReady.value = true
+            conversationStore.collect { snapshot ->
+                try {
+                    c.chatHistory.write(snapshot)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    error.value = "Could not save chat history on this device."
+                }
+            }
+        }
+    }
 
     fun ask(question: String) {
-        if (question.isBlank() || busy.value) return
+        if (question.isBlank() || busy.value || !historyReady.value) return
         busy.value = true
         error.value = null
+        val version = ++requestVersion
+        locallyChanged = true
         job =
             viewModelScope.launch {
                 try {
                     val id = activeConversationId.value ?: createConversation(question)
                     append(id, ChatMessage(text = question, user = true))
                     val answer = c.assistant.ask(question, messagesFor(id))
+                    currentCoroutineContext().ensureActive()
                     append(
                         id,
-                        ChatMessage(
-                            text = answer.text,
-                            user = false,
-                            taskDraft = answer.taskDraft,
-                            doctorDraft = answer.doctorDraft,
-                        ),
+                        ChatMessage(text = answer.text, user = false, drafts = answer.reviewDrafts),
                     )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    error.value = friendlyError(e)
+                    if (version == requestVersion) error.value = friendlyError(e)
                 } finally {
-                    busy.value = false
+                    if (version == requestVersion) busy.value = false
                 }
             }
     }
 
     fun cancel() {
+        requestVersion++
         job?.cancel()
+        job = null
         busy.value = false
     }
 
-    fun markDraftSaved(messageId: String) {
+    fun markDraftSaved(actionId: String) {
+        locallyChanged = true
         conversationStore.update { conversations ->
             conversations.map { conversation ->
                 conversation.copy(
                     messages =
                         conversation.messages.map { message ->
-                            if (message.id == messageId) message.copy(draftSaved = true)
-                            else message
+                            message.copy(
+                                drafts =
+                                    message.reviewDrafts.map { draft ->
+                                        if (draft.id == actionId) draft.copy(saved = true)
+                                        else draft
+                                    },
+                                draftSaved = message.draftSaved || message.id == actionId,
+                            )
                         }
                 )
             }
@@ -127,7 +147,8 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
     }
 
     fun selectConversation(id: String) {
-        if (busy.value) return
+        if (conversationStore.value.none { it.id == id }) return
+        cancel()
         activeConversationId.value = id
         error.value = null
         dismissHistory()
@@ -135,12 +156,14 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
 
     fun clear() {
         cancel()
+        locallyChanged = true
         conversationStore.value = emptyList()
         activeConversationId.value = null
         error.value = null
     }
 
     fun restoreHistory(conversations: List<ChatConversation>, activeId: String? = null) {
+        locallyChanged = true
         conversationStore.value = conversations
         activeConversationId.value = activeId ?: conversations.firstOrNull()?.id
     }
@@ -184,9 +207,11 @@ fun AssistantScreen(
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeId by vm.activeId.collectAsStateWithLifecycle()
     val historyVisible by vm.historyVisible.collectAsStateWithLifecycle()
-    var question by rememberSaveable { mutableStateOf("") }
+    val historyReady by vm.historyReady.collectAsStateWithLifecycle()
+    var question by rememberSaveable(activeId) { mutableStateOf("") }
     val scroll = rememberLazyListState()
-    LaunchedEffect(messages.size, busy) {
+    LaunchedEffect(activeId) { if (messages.isNotEmpty()) scroll.scrollToItem(messages.lastIndex) }
+    LaunchedEffect(activeId, messages.size, busy) {
         if (scroll.layoutInfo.totalItemsCount > 0)
             scroll.animateScrollToItem(scroll.layoutInfo.totalItemsCount - 1)
     }
@@ -227,7 +252,7 @@ fun AssistantScreen(
                 }
                 item {
                     Text(
-                        "Questions and matching local records are sent to Groq. Each chat keeps its own context while Athii is open.",
+                        "Questions, this conversation, and matching local records are sent to Groq. Chat history is saved on this device; each chat has its own context.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -256,27 +281,16 @@ fun AssistantScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             FormattedAssistantText(message.text)
-                            message.taskDraft?.let { draft ->
-                                if (message.draftSaved) DraftSavedLabel("Task created")
-                                else
-                                    FilledTonalButton(
-                                        onClick = {
-                                            reviewTask(message.id, aiJson.encodeToString(draft))
-                                        }
-                                    ) {
-                                        Text("Review task")
-                                    }
-                            }
-                            message.doctorDraft?.let { draft ->
-                                if (message.draftSaved) DraftSavedLabel("Doctor added")
-                                else
-                                    FilledTonalButton(
-                                        onClick = {
-                                            reviewDoctor(message.id, aiJson.encodeToString(draft))
-                                        }
-                                    ) {
-                                        Text("Review doctor")
-                                    }
+                            message.reviewDrafts.forEachIndexed { index, draft ->
+                                key(draft.id) {
+                                    DraftPreview(
+                                        draft = draft,
+                                        number =
+                                            if (message.reviewDrafts.size > 1) index + 1 else null,
+                                        reviewTask = reviewTask,
+                                        reviewDoctor = reviewDoctor,
+                                    )
+                                }
                             }
                         }
                     }
@@ -289,10 +303,7 @@ fun AssistantScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Loader2Circle(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Text(
-                            "Checking your local information…",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        Text("Thinking…", style = MaterialTheme.typography.bodySmall)
                     }
                     TextButton(onClick = vm::cancel) { Text("Stop") }
                 }
@@ -317,7 +328,7 @@ fun AssistantScreen(
                             question = ""
                         }
                     },
-                    enabled = busy || question.isNotBlank(),
+                    enabled = historyReady && (busy || question.isNotBlank()),
                     shape = CircleShape,
                     modifier = Modifier.padding(end = 6.dp).size(44.dp),
                     colors =
@@ -403,6 +414,61 @@ fun AssistantScreen(
                     }
             }
         }
+}
+
+@Composable
+private fun DraftPreview(
+    draft: ChatDraft,
+    number: Int?,
+    reviewTask: (String, String) -> Unit,
+    reviewDoctor: (String, String) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                (number?.let { "$it. " } ?: "") + draft.title,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            val details =
+                draft.task?.let {
+                    listOfNotNull(
+                            it.date,
+                            it.startTime ?: it.time,
+                            it.endTime?.let { end -> "Until $end" },
+                        )
+                        .joinToString(" · ")
+                }
+                    ?: draft.doctor
+                        ?.let {
+                            listOfNotNull(it.department, it.hospitalOrClinic)
+                                .filter(String::isNotBlank)
+                                .joinToString(" · ")
+                        }
+                        .orEmpty()
+            if (details.isNotBlank())
+                Text(
+                    details,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            if (draft.saved)
+                DraftSavedLabel(if (draft.task != null) "Task created" else "Doctor added")
+            else
+                FilledTonalButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        draft.task?.let { reviewTask(draft.id, aiJson.encodeToString(it)) }
+                        draft.doctor?.let { reviewDoctor(draft.id, aiJson.encodeToString(it)) }
+                    },
+                ) {
+                    Text(if (draft.task != null) "Review task" else "Review doctor")
+                }
+        }
+    }
 }
 
 @Composable

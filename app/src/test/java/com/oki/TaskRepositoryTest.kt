@@ -1,7 +1,9 @@
 package com.oki
 
+import com.oki.core.ai.aiJson
 import com.oki.core.storage.*
 import com.oki.feature.tasks.*
+import java.time.LocalDate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
@@ -52,11 +54,13 @@ class FakeScheduler : ReminderScheduler {
     override fun schedule(task: Task) {
         calls += "schedule:${task.id}"
         task.scheduledReminderAt?.let { alarms[task.id] = it }
+        task.scheduledEndReminderAt?.let { alarms["${task.id}:end"] = it }
     }
 
     override fun cancel(id: String) {
         calls += "cancel:$id"
         alarms.remove(id)
+        alarms.remove("$id:end")
     }
 
     override fun dismiss(id: String) {
@@ -65,6 +69,72 @@ class FakeScheduler : ReminderScheduler {
 }
 
 class TaskRepositoryTest {
+    @Test
+    fun alarmUsesSelectedStartEvenForLegacyOffset() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val due = System.currentTimeMillis() + 3_600_000
+        val alarm =
+            aiJson.decodeFromString<Task>(
+                """{"id":"alarm-mode","title":"Read","dueAt":$due,"reminderOffsetMinutes":5,"alertMode":"ALARM"}"""
+            )
+        repo.save(alarm)
+        assertEquals(due, scheduler.alarms[alarm.id])
+    }
+
+    @Test
+    fun switchingModesReplacesOneStartAndSnoozeKeepsAlarmMode() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val task = timedTask()
+        repo.save(task)
+        scheduler.calls.clear()
+        repo.save(task.copy(alertMode = TaskAlertMode.ALARM))
+        assertEquals(
+            listOf("cancel:${task.id}", "dismiss:${task.id}", "schedule:${task.id}"),
+            scheduler.calls,
+        )
+        assertEquals(setOf(task.id, "${task.id}:end"), scheduler.alarms.keys)
+        repo.snooze(task.id)
+        val snoozed = dao.get(task.id)!!
+        assertEquals(TaskAlertMode.ALARM, snoozed.alertMode)
+        assertEquals(task.dueAt, snoozed.dueAt)
+        assertEquals(task.dueAt + 3_600_000, snoozed.scheduledEndReminderAt)
+        repo.complete(task.id, true)
+        assertTrue(scheduler.alarms.isEmpty())
+    }
+
+    @Test
+    fun unavailableAlarmAccessDoesNotOverwriteExistingTask() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler =
+            object : ReminderScheduler {
+                override fun validate(task: Task) {
+                    require(task.alertMode != TaskAlertMode.ALARM)
+                }
+
+                override fun schedule(task: Task) {}
+
+                override fun cancel(id: String) {
+                    fail("Must validate before canceling an existing alert")
+                }
+
+                override fun dismiss(id: String) {}
+            }
+        val original = timedTask()
+        dao.put(original)
+        assertTrue(
+            runCatching {
+                    TaskRepository(dao, scheduler)
+                        .save(original.copy(alertMode = TaskAlertMode.ALARM))
+                }
+                .isFailure
+        )
+        assertEquals(original, dao.get(original.id))
+    }
+
     @Test
     fun editingCancelsThenReplacesSameIdentity() = runTest {
         val dao = FakeTaskDao()
@@ -80,7 +150,7 @@ class TaskRepositoryTest {
         )
         assertEquals(1, scheduler.alarms.size)
         assertEquals(1, dao.data.value.size)
-        assertEquals(task.dueAt + 60_000 - 300_000, scheduler.alarms[task.id])
+        assertEquals(task.dueAt + 60_000, scheduler.alarms[task.id])
     }
 
     @Test
@@ -146,5 +216,101 @@ class TaskRepositoryTest {
         repo.deliver(task.id, 1000) { published = true }
         assertTrue(published)
         assertNull(dao.get(task.id)!!.scheduledReminderAt)
+    }
+
+    private fun timedTask() =
+        Task(
+            id = "timed-task",
+            title = "Read",
+            dueAt = TimeRules.parseDue(LocalDate.now().plusDays(1).toString(), "10:00"),
+            endTime = "11:00",
+        )
+
+    @Test
+    fun startAndEndSchedulesAreIndependentAndCancelledOnCompletionOrDeletion() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val task = timedTask()
+        repo.save(task)
+        assertEquals(task.dueAt, scheduler.alarms[task.id])
+        assertEquals(task.dueAt + 3_600_000, scheduler.alarms["${task.id}:end"])
+        repo.complete(task.id, true)
+        assertTrue(scheduler.alarms.isEmpty())
+        assertNull(dao.get(task.id)!!.scheduledEndReminderAt)
+        repo.complete(task.id, false)
+        assertEquals(2, scheduler.alarms.size)
+        repo.delete(task.id)
+        assertTrue(scheduler.alarms.isEmpty())
+    }
+
+    @Test
+    fun restoreKeepsEndAfterStartAlreadyDeliveredAndDoesNotReviveStart() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val task = timedTask().copy(scheduledEndReminderAt = timedTask().dueAt + 3_600_000)
+        dao.put(task)
+        repo.restore()
+        repo.restore()
+        assertEquals(mapOf("${task.id}:end" to task.scheduledEndReminderAt), scheduler.alarms)
+    }
+
+    @Test
+    fun endDeliveryChecksItsOwnTimestampAndOnlyPublishesOnce() = runTest {
+        val dao = FakeTaskDao()
+        val repo = TaskRepository(dao, FakeScheduler())
+        val task =
+            Task(
+                title = "Finished",
+                dueAt = 1,
+                scheduledReminderAt = 1000,
+                scheduledEndReminderAt = 2000,
+            )
+        dao.put(task)
+        var published = 0
+        repo.deliver(task.id, 1000, TaskNotificationKind.END) { published++ }
+        assertEquals(0, published)
+        repo.deliver(task.id, 2000, TaskNotificationKind.END) { published++ }
+        repo.deliver(task.id, 2000, TaskNotificationKind.END) { published++ }
+        assertEquals(1, published)
+        assertEquals(1000L, dao.get(task.id)!!.scheduledReminderAt)
+        assertNull(dao.get(task.id)!!.scheduledEndReminderAt)
+    }
+
+    @Test
+    fun invalidEndTimesNeverPersistOrSchedule() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        listOf("09:00", "10:00", "25:99", "not a time").forEach { end ->
+            assertTrue(runCatching { repo.save(timedTask().copy(endTime = end)) }.isFailure)
+        }
+        assertTrue(dao.data.value.isEmpty())
+        assertTrue(scheduler.alarms.isEmpty())
+    }
+
+    @Test
+    fun disablingNotificationsAndRemovingEndCancelBothPreviousSchedules() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val task = timedTask()
+        repo.save(task)
+        repo.save(task.copy(endTime = null))
+        assertEquals(setOf(task.id), scheduler.alarms.keys)
+        repo.save(task.copy(reminderEnabled = false))
+        assertTrue(scheduler.alarms.isEmpty())
+    }
+
+    @Test
+    fun legacyOffsetsArePreservedByRestore() = runTest {
+        val dao = FakeTaskDao()
+        val scheduler = FakeScheduler()
+        val repo = TaskRepository(dao, scheduler)
+        val task = timedTask().copy(reminderOffsetMinutes = 5, endTime = null)
+        repo.save(task)
+        repo.restore()
+        assertEquals(task.dueAt - 300_000, scheduler.alarms[task.id])
     }
 }

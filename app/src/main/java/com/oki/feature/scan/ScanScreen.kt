@@ -12,7 +12,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -32,9 +32,19 @@ import com.oki.AppContainer
 import com.oki.core.ai.*
 import com.oki.core.ui.*
 import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+
+@Serializable
+data class ScanDraft(
+    val id: String = UUID.randomUUID().toString(),
+    val content: JsonObject,
+    val saved: Boolean = false,
+)
 
 class ScanViewModel(
     private val c: AppContainer,
@@ -44,15 +54,32 @@ class ScanViewModel(
     private val prep = ImagePreparation(context)
     private val cacheDirectory = context.cacheDir
     val path = state.getStateFlow<String?>("image_path", null)
-    val drafts = MutableStateFlow<List<JsonObject>>(emptyList())
+    val drafts =
+        MutableStateFlow(
+            state
+                .get<String>("scan_drafts")
+                ?.let { runCatching { aiJson.decodeFromString<List<ScanDraft>>(it) }.getOrNull() }
+                .orEmpty()
+        )
     val scanning = MutableStateFlow(false)
     val scanError = MutableStateFlow<String?>(null)
     private var job: Job? = null
+    private var generation = 0
+
+    private fun updateDrafts(value: List<ScanDraft>) {
+        state["scan_drafts"] = aiJson.encodeToString(value)
+        drafts.value = value
+    }
+
+    fun markSaved(id: String) {
+        updateDrafts(drafts.value.map { if (it.id == id) it.copy(saved = true) else it })
+    }
 
     fun select(uri: Uri) {
         cancel()
         action {
-            drafts.value = emptyList()
+            updateDrafts(emptyList())
+            scanError.value = null
             val previous = path.value
             state["image_path"] = prep.prepare(uri).path
             withContext(Dispatchers.IO) {
@@ -74,14 +101,17 @@ class ScanViewModel(
         val file = path.value ?: return
         scanning.value = true
         scanError.value = null
+        val requestGeneration = ++generation
         job =
             viewModelScope.launch {
                 try {
-                    drafts.value =
+                    val result =
                         c.gemini.extract(
                             withContext(Dispatchers.IO) { File(file).readBytes() },
                             doctor,
                         )
+                    if (generation != requestGeneration) return@launch
+                    updateDrafts(result.map { ScanDraft(content = it) })
                     if (drafts.value.isEmpty())
                         scanError.value =
                             "No readable ${if (doctor) "doctors" else "tasks"} found. Try another image or enter manually."
@@ -90,12 +120,13 @@ class ScanViewModel(
                 } catch (e: Exception) {
                     scanError.value = friendlyError(e)
                 } finally {
-                    scanning.value = false
+                    if (generation == requestGeneration) scanning.value = false
                 }
             }
     }
 
     fun cancel() {
+        generation++
         job?.cancel()
         scanning.value = false
     }
@@ -105,9 +136,8 @@ class ScanViewModel(
 fun ScanScreen(
     vm: ScanViewModel,
     doctor: Boolean,
-    review: (String) -> Unit,
+    review: (String, String) -> Unit,
     manual: () -> Unit,
-    settings: () -> Unit = {},
 ) {
     val path by vm.path.collectAsStateWithLifecycle()
     val drafts by vm.drafts.collectAsStateWithLifecycle()
@@ -150,12 +180,12 @@ fun ScanScreen(
         item {
             PageHeading(
                 "A picture. A head start.",
-                "Scan ${if (doctor) "a doctor card or schedule" else "a note or a task"}, then review every detail.",
+                "Scan ${if (doctor) "a card or doctor list" else "a note or task list"}. Review every item before saving.",
             )
         }
         item {
             Text(
-                "The selected image is sent to Google Gemini only when you tap Extract. Nothing is saved to your directory or tasks until you review and save.",
+                "When you tap Extract, Groq or Google Gemini reads the selected image. You can review and edit all detected ${if (doctor) "doctors" else "tasks"} below before saving them.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -177,7 +207,7 @@ fun ScanScreen(
                         else permission.launch(Manifest.permission.CAMERA)
                     },
                     enabled = !scanning && !busy,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                 ) {
                     Icon(Icons.Outlined.PhotoCamera, null)
                     Spacer(Modifier.width(8.dp))
@@ -192,7 +222,7 @@ fun ScanScreen(
                         )
                     },
                     enabled = !scanning && !busy,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                 ) {
                     Icon(Icons.Outlined.PhotoLibrary, null)
                     Spacer(Modifier.width(8.dp))
@@ -221,7 +251,7 @@ fun ScanScreen(
             }
         item { ErrorBanner(error ?: scanError ?: cameraError) }
         if (scanning) item { OutlinedButton(onClick = vm::cancel) { Text("Cancel extraction") } }
-        else if (path != null)
+        else if (path != null && drafts.isEmpty())
             item {
                 Button(
                     onClick = { vm.extract(doctor) },
@@ -231,20 +261,49 @@ fun ScanScreen(
                     Text(if (scanError == null) "Extract details" else "Retry extraction")
                 }
             }
-        itemsIndexed(drafts) { index, draft ->
+        if (drafts.isNotEmpty())
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Review ${drafts.size} ${if (doctor) "doctors" else "tasks"}",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        "${drafts.count { it.saved }} of ${drafts.size} created · Tap an item to review",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        items(drafts, key = { it.id }) { draft ->
             val title =
-                draft[if (doctor) "doctorName" else "title"]
+                draft.content[if (doctor) "doctorName" else "title"]
                     ?.jsonPrimitive
                     ?.contentOrNull
                     .orEmpty()
-                    .ifBlank { "Untitled draft ${index + 1}" }
+                    .ifBlank { "Untitled draft" }
             OutlinedCard(
-                onClick = { review(draft.toString()) },
+                onClick = { review(draft.id, draft.content.toString()) },
+                enabled = !draft.saved,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(18.dp)) {
                     Text(title, style = MaterialTheme.typography.titleMedium)
-                    Text("Review & edit →", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val details =
+                        if (doctor) listOf("department", "hospitalOrClinic")
+                        else listOf("date", "time", "endTime")
+                    val summary =
+                        details
+                            .mapNotNull { draft.content[it]?.jsonPrimitive?.contentOrNull }
+                            .filter { it.isNotBlank() }
+                            .joinToString(" · ")
+                    if (summary.isNotEmpty())
+                        Text(summary, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (draft.saved) "${if (doctor) "Doctor" else "Task"} created"
+                        else "Review & edit →",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

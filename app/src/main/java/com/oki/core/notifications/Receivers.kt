@@ -2,6 +2,7 @@ package com.oki.core.notifications
 
 import android.content.*
 import com.oki.OkiApplication
+import com.oki.feature.tasks.TaskNotificationKind
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -13,15 +14,26 @@ class ReminderReceiver : BroadcastReceiver() {
         app.scope.launch {
             try {
                 when (intent.action) {
+                    "stop" -> app.container.publisher.dismissStart(id)
                     "done" -> app.container.tasks.complete(id, true)
                     "snooze" -> app.container.tasks.snooze(id)
-                    "remind" ->
-                        app.container.tasks.deliver(id, intent.getLongExtra("expected_at", -1)) {
+                    "remind" -> {
+                        val kind =
+                            if (intent.getStringExtra("notification_kind") == "END")
+                                TaskNotificationKind.END
+                            else TaskNotificationKind.START
+                        app.container.tasks.deliver(
+                            id,
+                            intent.getLongExtra("expected_at", -1),
+                            kind,
+                        ) {
                             app.container.publisher.publish(
                                 it,
                                 app.container.settings.settings.first(),
+                                kind,
                             )
                         }
+                    }
                 }
             } finally {
                 pending.finish()

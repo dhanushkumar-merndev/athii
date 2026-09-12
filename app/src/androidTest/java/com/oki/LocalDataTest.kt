@@ -178,7 +178,7 @@ class LocalDataTest {
             ChannelIdentity.notificationTag(b.id),
         )
         tasks.save(a.copy(dueAt = due + 60000))
-        assertEquals(due + 60000 - 300000, scheduled[a.id])
+        assertEquals(due + 60000, scheduled[a.id])
         tasks.complete(a.id, true)
         assertFalse(scheduled.contains(a.id))
         tasks.delete(b.id)

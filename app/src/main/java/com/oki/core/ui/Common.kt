@@ -159,35 +159,42 @@ fun Field(
     suggestions: List<String> = emptyList(),
 ) {
     val query = value.trimStart()
-    val match = remember(query, suggestions) {
-        if (query.length < 2) null
-        else suggestions.firstOrNull { it.startsWith(query, ignoreCase = true) && !it.equals(query, ignoreCase = true) }
-    }
-    
-    val visualTransformation = remember(match) {
-        if (match != null) {
-            androidx.compose.ui.text.input.VisualTransformation { text ->
-                val typedLength = text.length
-                val ghostText = match.substring(typedLength)
-                val builder = androidx.compose.ui.text.AnnotatedString.Builder(text.text)
-                builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.Gray))
-                builder.append(ghostText)
-                builder.pop()
-                val annotatedString = builder.toAnnotatedString()
-                
-                androidx.compose.ui.text.input.TransformedText(
-                    text = annotatedString,
-                    offsetMapping = object : androidx.compose.ui.text.input.OffsetMapping {
-                        override fun originalToTransformed(offset: Int): Int = offset
-                        override fun transformedToOriginal(offset: Int): Int = 
-                            if (offset > typedLength) typedLength else offset
-                    }
-                )
-            }
-        } else {
-            androidx.compose.ui.text.input.VisualTransformation.None
+    val match =
+        remember(query, suggestions) {
+            if (query.length < 2) null
+            else
+                suggestions.firstOrNull {
+                    it.startsWith(query, ignoreCase = true) && !it.equals(query, ignoreCase = true)
+                }
         }
-    }
+
+    val visualTransformation =
+        remember(match) {
+            if (match != null) {
+                androidx.compose.ui.text.input.VisualTransformation { text ->
+                    val typedLength = text.length
+                    val ghostText = match.substring(typedLength)
+                    val builder = androidx.compose.ui.text.AnnotatedString.Builder(text.text)
+                    builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.Gray))
+                    builder.append(ghostText)
+                    builder.pop()
+                    val annotatedString = builder.toAnnotatedString()
+
+                    androidx.compose.ui.text.input.TransformedText(
+                        text = annotatedString,
+                        offsetMapping =
+                            object : androidx.compose.ui.text.input.OffsetMapping {
+                                override fun originalToTransformed(offset: Int): Int = offset
+
+                                override fun transformedToOriginal(offset: Int): Int =
+                                    if (offset > typedLength) typedLength else offset
+                            },
+                    )
+                }
+            } else {
+                androidx.compose.ui.text.input.VisualTransformation.None
+            }
+        }
 
     OutlinedTextField(
         value = value,
@@ -198,13 +205,14 @@ fun Field(
         singleLine = !multiline,
         minLines = if (multiline) 3 else 1,
         visualTransformation = visualTransformation,
-        trailingIcon = if (match != null) {
-            {
-                IconButton(onClick = { change(match) }) {
-                    Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
+        trailingIcon =
+            if (match != null) {
+                {
+                    IconButton(onClick = { change(match) }) {
+                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
+                    }
                 }
-            }
-        } else null
+            } else null,
     )
 }
 
@@ -218,35 +226,42 @@ fun InlineAutocompleteField(
     suggestions: List<String> = emptyList(),
 ) {
     val query = value.trimStart()
-    val match = remember(query, suggestions) {
-        if (query.length < 2) null
-        else suggestions.firstOrNull { it.startsWith(query, ignoreCase = true) && !it.equals(query, ignoreCase = true) }
-    }
-    
-    val visualTransformation = remember(match) {
-        if (match != null) {
-            androidx.compose.ui.text.input.VisualTransformation { text ->
-                val typedLength = text.length
-                val ghostText = match.substring(typedLength)
-                val builder = androidx.compose.ui.text.AnnotatedString.Builder(text.text)
-                builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.Gray))
-                builder.append(ghostText)
-                builder.pop()
-                val annotatedString = builder.toAnnotatedString()
-                
-                androidx.compose.ui.text.input.TransformedText(
-                    text = annotatedString,
-                    offsetMapping = object : androidx.compose.ui.text.input.OffsetMapping {
-                        override fun originalToTransformed(offset: Int): Int = offset
-                        override fun transformedToOriginal(offset: Int): Int = 
-                            if (offset > typedLength) typedLength else offset
-                    }
-                )
-            }
-        } else {
-            androidx.compose.ui.text.input.VisualTransformation.None
+    val match =
+        remember(query, suggestions) {
+            if (query.length < 2) null
+            else
+                suggestions.firstOrNull {
+                    it.startsWith(query, ignoreCase = true) && !it.equals(query, ignoreCase = true)
+                }
         }
-    }
+
+    val visualTransformation =
+        remember(match) {
+            if (match != null) {
+                androidx.compose.ui.text.input.VisualTransformation { text ->
+                    val typedLength = text.length
+                    val ghostText = match.substring(typedLength)
+                    val builder = androidx.compose.ui.text.AnnotatedString.Builder(text.text)
+                    builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.Gray))
+                    builder.append(ghostText)
+                    builder.pop()
+                    val annotatedString = builder.toAnnotatedString()
+
+                    androidx.compose.ui.text.input.TransformedText(
+                        text = annotatedString,
+                        offsetMapping =
+                            object : androidx.compose.ui.text.input.OffsetMapping {
+                                override fun originalToTransformed(offset: Int): Int = offset
+
+                                override fun transformedToOriginal(offset: Int): Int =
+                                    if (offset > typedLength) typedLength else offset
+                            },
+                    )
+                }
+            } else {
+                androidx.compose.ui.text.input.VisualTransformation.None
+            }
+        }
 
     OutlinedTextField(
         value = value,
@@ -257,13 +272,14 @@ fun InlineAutocompleteField(
         singleLine = true,
         shape = RoundedCornerShape(18.dp),
         visualTransformation = visualTransformation,
-        trailingIcon = if (match != null) {
-            {
-                IconButton(onClick = { change(match) }) {
-                    Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
+        trailingIcon =
+            if (match != null) {
+                {
+                    IconButton(onClick = { change(match) }) {
+                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
+                    }
                 }
-            }
-        } else null
+            } else null,
     )
 }
 

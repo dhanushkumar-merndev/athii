@@ -79,7 +79,12 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
             }
         } else {
             val results = mutableListOf<String>()
-            for ((label, model) in listOf("Primary" to GROQ_PRIMARY, "Fallback" to GROQ_FALLBACK)) {
+            for ((label, model) in
+                listOf(
+                    "Primary" to GROQ_PRIMARY,
+                    "Fallback" to GROQ_FALLBACK,
+                    "Tertiary" to GROQ_TERTIARY,
+                )) {
                 try {
                     c.groq.test(model)
                     results += "$label ($model): Passed"
@@ -136,12 +141,14 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
     val error by vm.error.collectAsStateWithLifecycle()
     val configured by vm.configured.collectAsStateWithLifecycle()
     val diagnostic by vm.diagnostic.collectAsStateWithLifecycle()
-    var offset by
-        rememberSaveable(settings.defaultOffset) {
-            mutableStateOf(settings.defaultOffset.toString())
-        }
     var exact by remember { mutableStateOf(vm.c.reminders.hasExactAccess()) }
     var notifications by remember { mutableStateOf(vm.c.publisher.canNotify()) }
+    val notificationManager = remember {
+        context.getSystemService(android.app.NotificationManager::class.java)
+    }
+    var fullScreenAlarms by remember {
+        mutableStateOf(Build.VERSION.SDK_INT < 34 || notificationManager.canUseFullScreenIntent())
+    }
     var explainExact by remember { mutableStateOf(false) }
     var confirmation by remember { mutableStateOf<String?>(null) }
     val notificationPermission =
@@ -164,6 +171,8 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
         vm.refreshKeys()
         exact = vm.c.reminders.hasExactAccess()
         notifications = vm.c.publisher.canNotify()
+        fullScreenAlarms =
+            Build.VERSION.SDK_INT < 34 || notificationManager.canUseFullScreenIntent()
         onPauseOrDispose { vm.c.sounds.stop() }
     }
     fun openNotificationSettings() {
@@ -173,14 +182,21 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
         )
     }
     LazyColumn(
-        Modifier.fillMaxSize().imePadding().padding(horizontal = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 30.dp),
+        Modifier.fillMaxSize().imePadding().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(top = 12.dp, bottom = 30.dp),
     ) {
-        item { PageHeading("Settings", "A few preferences for your day.") }
+        item {
+            Text("Make Athii yours.", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Sound, appearance, and a little help from AI.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         item {
             ErrorBanner(error)
-            if (busy) CenterLoader()
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (diagnostic.isNotBlank())
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainer,
@@ -194,74 +210,156 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
                 }
         }
         item {
-            SectionLabel("REMINDERS")
-            Field("Default minutes before", offset, { offset = it })
-            TextButton(onClick = { vm.offset(offset) }, enabled = !busy) {
-                Text("Save default reminder")
-            }
-        }
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(SoundMode.SYSTEM, SoundMode.SILENT).forEach { mode ->
-                    FilterChip(
-                        settings.soundMode == mode,
-                        { vm.sound(mode) },
-                        label = { Text(if (mode == SoundMode.SYSTEM) "System sound" else "Silent") },
-                    )
-                }
-            }
-        }
-        item {
-            OutlinedButton(onClick = { audioPicker.launch(arrayOf("audio/*")) }, enabled = !busy) {
-                Icon(Icons.Outlined.MusicNote, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Choose custom sound · ≤5 sec")
-            }
-        }
-        if (settings.soundMode == SoundMode.CUSTOM)
-            item {
-                Text("Custom sound selected", style = MaterialTheme.typography.bodySmall)
-                Row {
-                    TextButton(
-                        onClick = { vm.c.sounds.preview(Uri.parse(settings.customSoundUri)) }
-                    ) {
-                        Text("Preview")
-                    }
-                    TextButton(onClick = vm.c.sounds::stop) { Text("Stop") }
-                    TextButton(onClick = { vm.sound(SoundMode.SYSTEM) }) { Text("Remove / reset") }
-                }
-            }
-        item {
-            OutlinedButton(onClick = vm::testNotification, enabled = !busy) {
-                Text("Test notification")
-            }
-        }
-        item {
-            Text("Notifications: ${if (notifications) "Allowed" else "Blocked"}")
-            TextButton(
-                onClick = {
+            SettingsCard("Notifications", Icons.Outlined.Notifications) {
+                Text(
+                    "Choose Notification or Alarm on each task. An optional end time sends a normal notification with the task title.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SettingsAction(
+                    "Notifications",
+                    if (notifications) "Allowed" else "Blocked",
+                    if (notifications) "Manage" else "Enable",
+                ) {
                     if (Build.VERSION.SDK_INT >= 33 && !notifications)
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     else openNotificationSettings()
                 }
-            ) {
-                Text("Notification permission")
-            }
-            TextButton(onClick = ::openNotificationSettings) {
-                Text("Open notification & channel settings")
+                HorizontalDivider()
+                SettingsAction(
+                    "On-time delivery",
+                    if (exact) "Ready" else "Android may delay delivery",
+                    if (exact) "Details" else "Enable",
+                ) {
+                    explainExact = true
+                }
+                if (Build.VERSION.SDK_INT >= 34) {
+                    HorizontalDivider()
+                    SettingsAction(
+                        "Alarm on lock screen",
+                        if (fullScreenAlarms) "Allowed" else "Tap the alarm notification to open",
+                        "Manage",
+                    ) {
+                        context.startActivity(
+                            Intent(
+                                AndroidSettings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                Uri.parse("package:${context.packageName}"),
+                            )
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = vm::testNotification,
+                    enabled = !busy && notifications,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Send test notification")
+                }
             }
         }
         item {
-            Text("Exact alarms: ${if (exact) "Allowed" else "Not allowed — timing may be delayed"}")
-            TextButton(onClick = { explainExact = true }) { Text("Alarms & reminders access") }
+            SettingsCard("Notification sound", Icons.Outlined.MusicNote) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(SoundMode.SYSTEM, SoundMode.SILENT).forEach { mode ->
+                        FilterChip(
+                            settings.soundMode == mode,
+                            { vm.sound(mode) },
+                            label = {
+                                Text(if (mode == SoundMode.SYSTEM) "System sound" else "Silent")
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !busy,
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        if (settings.soundMode == SoundMode.CUSTOM) "Change custom sound"
+                        else "Choose custom sound"
+                    )
+                }
+                if (settings.soundMode == SoundMode.CUSTOM) {
+                    Text("Custom sound selected", style = MaterialTheme.typography.bodySmall)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TextButton(
+                            onClick = { vm.c.sounds.preview(Uri.parse(settings.customSoundUri)) },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Preview")
+                        }
+                        TextButton(onClick = vm.c.sounds::stop, modifier = Modifier.weight(1f)) {
+                            Text("Stop")
+                        }
+                        TextButton(
+                            onClick = { vm.sound(SoundMode.SYSTEM) },
+                            modifier = Modifier.weight(1f),
+                            enabled = !busy,
+                        ) {
+                            Text("Reset")
+                        }
+                    }
+                }
+                Text(
+                    "Custom clips can be up to 5 seconds. Sound follows your phone’s silent mode and Do Not Disturb settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         item {
-            SectionLabel("AI CONFIGURATION")
-            Text(
-                "Your keys are encrypted on this device. Saved keys are never shown again.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            SettingsCard("Appearance", Icons.Outlined.Palette) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Appearance.entries.forEach { appearance ->
+                        FilterChip(
+                            settings.appearance == appearance,
+                            { vm.appearance(appearance) },
+                            label = {
+                                Text(appearance.name.lowercase().replaceFirstChar(Char::uppercase))
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !busy,
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            SettingsCard("AI reasoning", Icons.Outlined.AutoAwesome) {
+                Text(
+                    "High takes more time to work through a request. Low responds faster.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ReasoningEffort.entries.forEach { effort ->
+                        FilterChip(
+                            selected = settings.reasoningEffort == effort,
+                            onClick = { vm.reasoning(effort) },
+                            label = {
+                                Text(effort.name.lowercase().replaceFirstChar(Char::uppercase))
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = !busy,
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            SettingsCard("AI connections", Icons.Outlined.CloudDone) {
+                Text(
+                    "Chat and scans use Groq, with Gemini available for image fallback.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         items(Provider.entries.size) { index ->
             val provider = Provider.entries[index]
@@ -275,55 +373,44 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
             )
         }
         item {
-            SectionLabel("APPEARANCE")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Appearance.entries.forEach { appearance ->
-                    FilterChip(
-                        settings.appearance == appearance,
-                        { vm.appearance(appearance) },
-                        label = {
-                            Text(appearance.name.lowercase().replaceFirstChar(Char::uppercase))
-                        },
-                    )
+            SettingsCard("Local data", Icons.Outlined.Storage) {
+                Text(
+                    "Your tasks, doctors, and chat history stay on this device.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = { confirmation = "completed" },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                ) {
+                    Text("Clear completed tasks")
+                }
+                TextButton(
+                    onClick = { confirmation = "chat" },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                ) {
+                    Text("Clear chat history")
+                }
+                HorizontalDivider()
+                TextButton(
+                    onClick = { confirmation = "all" },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                ) {
+                    Text("Delete all app data", color = MaterialTheme.colorScheme.error)
                 }
             }
         }
         item {
-            SectionLabel("AI REASONING")
             Text(
-                "High is more thorough. Low responds faster for simple questions.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "Athii · Version ${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.titleSmall,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ReasoningEffort.entries.forEach { effort ->
-                    FilterChip(
-                        selected = settings.reasoningEffort == effort,
-                        onClick = { vm.reasoning(effort) },
-                        label = { Text(effort.name.lowercase().replaceFirstChar(Char::uppercase)) },
-                        colors =
-                            FilterChipDefaults.filterChipColors(
-                                selectedContainerColor =
-                                    MaterialTheme.colorScheme.secondaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            ),
-                    )
-                }
-            }
-        }
-        item {
-            SectionLabel("LOCAL DATA")
-            TextButton(onClick = { confirmation = "completed" }) { Text("Clear completed tasks") }
-            TextButton(onClick = { confirmation = "chat" }) { Text("Clear chat") }
-            TextButton(onClick = { confirmation = "all" }) {
-                Text("Delete all app data", color = MaterialTheme.colorScheme.error)
-            }
-        }
-        item {
-            SectionLabel("ABOUT Athii")
-            Text("Version ${BuildConfig.VERSION_NAME}")
+            Spacer(Modifier.height(6.dp))
             Text(
-                "Local by default. No accounts, sync, ads, or analytics. Only AI questions, matching records, and selected images leave the device when you use AI. Android controls notification sound and delivery.",
+                "No accounts, ads, or sync. Only your AI questions, matching records, and selected images are sent when you use AI.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -335,7 +422,7 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
             title = { Text("Right on time") },
             text = {
                 Text(
-                    "Allow Alarms & Reminders so Athii can deliver reminders at the selected time and reset attendance at local midnight. Without access, Android may delay alarms; Athii corrects attendance when reopened."
+                    "Android calls this permission Alarms & Reminders. It lets Athii send normal notifications at your selected start and end times. It does not play alarm-clock audio. Without access, delivery may be delayed."
                 )
             },
             confirmButton = {
@@ -360,7 +447,7 @@ fun SettingsScreen(vm: SettingsViewModel, clearChat: () -> Unit, dataDeleted: ()
         ConfirmDelete(
             if (action == "all") "Delete all app data?" else "Delete ${action.lowercase()}?",
             if (action == "all")
-                "All tasks, doctors, credentials, preferences, custom sounds, and this chat will be permanently removed from this device."
+                "All tasks, doctors, credentials, preferences, custom sounds, and all chat history will be permanently removed from this device."
             else "This cannot be undone.",
             { confirmation = null },
             {
@@ -393,10 +480,12 @@ fun CredentialEditor(
     // Intentionally not rememberSaveable: credentials must never enter Android saved-instance
     // state.
     var key by remember { mutableStateOf("") }
+    var editing by rememberSaveable { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                if (provider == Provider.GEMINI) "Gemini · image extraction" else "Groq · Ask AI",
+                if (provider == Provider.GEMINI) "Gemini · image fallback"
+                else "Groq · chat and scans",
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
@@ -404,30 +493,94 @@ fun CredentialEditor(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            OutlinedTextField(
-                key,
-                { key = it },
-                label = { Text(if (configured) "Replacement API key" else "API key") },
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TextButton(
-                    onClick = { save(key) { key = "" } },
-                    enabled = key.isNotBlank() && !busy,
-                ) {
-                    Text(if (configured) "Replace" else "Save")
+            if (editing || !configured) {
+                OutlinedTextField(
+                    key,
+                    { key = it },
+                    label = { Text(if (configured) "Replacement API key" else "API key") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(
+                        onClick = {
+                            save(key) {
+                                key = ""
+                                editing = false
+                            }
+                        },
+                        enabled = key.isNotBlank() && !busy,
+                    ) {
+                        Text(if (configured) "Replace" else "Save")
+                    }
+                    if (configured) TextButton(onClick = delete, enabled = !busy) { Text("Delete") }
                 }
-                if (configured) TextButton(onClick = delete, enabled = !busy) { Text("Delete") }
             }
-            OutlinedButton(onClick = test, enabled = configured && !busy) {
+            if (configured)
+                TextButton(
+                    onClick = {
+                        editing = !editing
+                        key = ""
+                    },
+                    enabled = !busy,
+                ) {
+                    Text(if (editing) "Cancel" else "Manage connection")
+                }
+            OutlinedButton(
+                onClick = test,
+                enabled = configured && !busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text(
                     if (provider == Provider.GEMINI) "Test Gemini"
                     else "Test Groq · Primary + Fallback"
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsCard(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.secondary)
+                Text(title, style = MaterialTheme.typography.titleMedium)
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SettingsAction(title: String, status: String, action: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = onClick) { Text(action) }
     }
 }
