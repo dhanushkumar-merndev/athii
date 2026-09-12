@@ -27,6 +27,13 @@ class TutorialController(
 ) {
     private val steps = ALL_TUTORIAL_STEPS
 
+    /**
+     * Set by the host. Steps it rejects, such as doctor-record steps with no doctors saved, are
+     * passed over without being shown, instead of flashing up and timing out one after another.
+     */
+    var isStepAvailable: (TutorialStep) -> Boolean = { true }
+    private var movingForward = true
+
     private val _isTourActive = MutableStateFlow(false)
     val isTourActive: StateFlow<Boolean> = _isTourActive.asStateFlow()
 
@@ -60,6 +67,7 @@ class TutorialController(
 
     /** Begin the tour from step 0. */
     fun startTour() {
+        movingForward = true
         _currentStepIndex.value = 0
         _isTourActive.value = true
         _showSkipConfirm.value = false
@@ -68,6 +76,7 @@ class TutorialController(
 
     /** Replay from Settings — works even when already completed. */
     fun replayTour() {
+        movingForward = true
         _currentStepIndex.value = 0
         _isTourActive.value = true
         _showSkipConfirm.value = false
@@ -84,6 +93,7 @@ class TutorialController(
     // ---- navigation within tour ----
 
     fun next() {
+        movingForward = true
         val nextIndex = findNextValidIndex(_currentStepIndex.value + 1, forward = true)
         if (nextIndex != null) {
             _currentStepIndex.value = nextIndex
@@ -94,6 +104,7 @@ class TutorialController(
     }
 
     fun previous() {
+        movingForward = false
         val prevIndex = findNextValidIndex(_currentStepIndex.value - 1, forward = false)
         if (prevIndex != null) {
             _currentStepIndex.value = prevIndex
@@ -135,11 +146,22 @@ class TutorialController(
     }
 
     /**
-     * Called by the overlay when it detects the target is unavailable after a brief wait.
-     * Auto-advance to the next valid step.
+     * Called by the overlay when a target never appeared. Continues in the direction the user was
+     * travelling, so pressing Back onto a missing target does not bounce straight forward again.
      */
     fun skipUnavailableTarget() {
-        next()
+        val current = _currentStepIndex.value
+        val index =
+            if (movingForward) findNextValidIndex(current + 1, forward = true)
+            else
+                findNextValidIndex(current - 1, forward = false)
+                    ?: findNextValidIndex(current + 1, forward = true)
+        if (index == null) {
+            finish()
+            return
+        }
+        _currentStepIndex.value = index
+        emitNavigationForStep(index)
     }
 
     // ---- internals ----
@@ -157,15 +179,9 @@ class TutorialController(
      */
     private fun findNextValidIndex(fromIndex: Int, forward: Boolean): Int? {
         val range = if (forward) fromIndex until steps.size else fromIndex downTo 0
-        for (i in range) {
-            val step = steps[i]
-            // Full-screen overlays are always valid.
-            if (step.targetKey.isEmpty()) return i
-            // For targeted steps, we don't require the target to already be measured here because
-            // the screen might not have navigated yet. The overlay will handle waiting.
-            return i
-        }
-        return null
+        // Targets need not be measured yet (the screen may still be navigating; the overlay waits
+        // for them). Only steps the host says cannot apply are passed over, and never shown.
+        return range.firstOrNull { it in steps.indices && isStepAvailable(steps[it]) }
     }
 
     private fun emitNavigationForStep(index: Int) {

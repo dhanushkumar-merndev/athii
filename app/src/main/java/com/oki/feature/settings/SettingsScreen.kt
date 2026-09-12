@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -104,7 +105,9 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
         }
     }
 
-    fun sound(mode: SoundMode) = action {
+    // Preference taps use quickAction: they finish in milliseconds, and flipping busy disabled
+    // every control on the screen, which flickered the whole page on each tap.
+    fun sound(mode: SoundMode) = quickAction {
         c.settings.setSound(mode)
         c.publisher.channel(c.settings.settings.first())
     }
@@ -115,7 +118,7 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
         c.publisher.channel(c.settings.settings.first())
     }
 
-    fun alarmSound(mode: AlarmSound, uri: String = "") = action {
+    fun alarmSound(mode: AlarmSound, uri: String = "") = quickAction {
         c.settings.setAlarmSound(mode, uri)
         // Recreate the channel now so the next alarm rings with the tone just chosen.
         c.publisher.alarmChannel(c.settings.settings.first())
@@ -136,7 +139,7 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
         }
     }
 
-    fun bypassDnd(value: Boolean) = action {
+    fun bypassDnd(value: Boolean) = quickAction {
         c.settings.setBypassDnd(value)
         // Recreate both channels so the new bypass identity exists before the next alert.
         val current = c.settings.settings.first()
@@ -144,14 +147,14 @@ class SettingsViewModel(val c: AppContainer) : ActionViewModel() {
         c.publisher.alarmChannel(current)
     }
 
-    fun autoDelete(value: AutoDeleteCompleted) = action {
+    fun autoDelete(value: AutoDeleteCompleted) = quickAction {
         c.settings.setAutoDeleteCompleted(value)
         c.purgeExpiredCompletedTasks()
     }
 
-    fun appearance(value: Appearance) = action { c.settings.setAppearance(value) }
+    fun appearance(value: Appearance) = quickAction { c.settings.setAppearance(value) }
 
-    fun reasoning(value: ReasoningEffort) = action { c.settings.setReasoningEffort(value) }
+    fun reasoning(value: ReasoningEffort) = quickAction { c.settings.setReasoningEffort(value) }
 
     fun testNotification() = action {
         require(c.publisher.canNotify()) { "Enable notifications in Android settings first." }
@@ -179,8 +182,21 @@ fun SettingsScreen(
     dataDeleted: () -> Unit,
     replayTour: () -> Unit = {},
     tutorialTargets: TutorialTargetRegistry? = null,
+    tourTarget: String? = null,
 ) {
     val context = LocalContext.current
+    val listState = rememberLazyListState()
+    // Tour targets here sit in a scrolling list and are not composed until on screen, so bring
+    // each into view for the overlay: Notifications is at the top, Help at the end.
+    LaunchedEffect(tourTarget) {
+        when (tourTarget) {
+            "notification_settings" -> listState.animateScrollToItem(0)
+            "replay_tutorial" -> {
+                val count = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+                listState.animateScrollToItem(count - 1)
+            }
+        }
+    }
     val settings by vm.settings.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
@@ -196,7 +212,6 @@ fun SettingsScreen(
     }
     var explainExact by remember { mutableStateOf(false) }
     var batteryExempt by remember { mutableStateOf(vm.c.publisher.ignoresBatteryOptimizations()) }
-    var dndAccess by remember { mutableStateOf(vm.c.publisher.canBypassDnd()) }
     var confirmation by remember { mutableStateOf<String?>(null) }
     val notificationPermission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -223,7 +238,6 @@ fun SettingsScreen(
         exact = vm.c.reminders.hasExactAccess()
         notifications = vm.c.publisher.canNotify()
         batteryExempt = vm.c.publisher.ignoresBatteryOptimizations()
-        dndAccess = vm.c.publisher.canBypassDnd()
         vm.refreshChannels()
         fullScreenAlarms =
             Build.VERSION.SDK_INT < 34 || notificationManager.canUseFullScreenIntent()
@@ -242,6 +256,14 @@ fun SettingsScreen(
         val target = (request ?: list).takeIf { it.resolveActivity(context.packageManager) != null }
         runCatching { context.startActivity(target ?: list) }
     }
+    fun openAppInfo() {
+        context.startActivity(
+            Intent(
+                AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}"),
+            )
+        )
+    }
     fun openNotificationSettings() {
         context.startActivity(
             Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -250,6 +272,7 @@ fun SettingsScreen(
     }
     LazyColumn(
         Modifier.fillMaxSize().imePadding().padding(horizontal = 20.dp),
+        state = listState,
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(top = 12.dp, bottom = 30.dp),
     ) {
@@ -331,9 +354,9 @@ fun SettingsScreen(
                         )
                         Text(
                             if (!settings.bypassDnd)
-                                "Off · Athii stays silent while Do Not Disturb is on"
-                            else if (dndAccess) "On · task alerts will sound through Do Not Disturb"
-                            else "Needs Do Not Disturb access before it can take effect",
+                                "Off · reminders stay silent during Do Not Disturb. Alarm tasks still ring."
+                            else
+                                "On · reminders ring at alarm volume, so they sound whenever Do Not Disturb lets alarms through",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -344,17 +367,6 @@ fun SettingsScreen(
                         enabled = !busy,
                     )
                 }
-                if (settings.bypassDnd && !dndAccess)
-                    TextButton(
-                        onClick = {
-                            context.startActivity(
-                                Intent(AndroidSettings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Grant Do Not Disturb access")
-                    }
                 HorizontalDivider()
                 SettingsAction(
                     "Keep working when Athii is closed",
@@ -365,13 +377,17 @@ fun SettingsScreen(
                     openBatterySettings(batteryExempt)
                 }
                 Text(
-                    "Alarms and reminders are scheduled by Android, so they fire with Athii closed — " +
-                        "but only while the system is allowed to wake it. If alerts still go missing, " +
-                        "also turn on Autostart and set battery usage to Unrestricted for Athii in your " +
-                        "phone's own battery settings.",
+                    "Alarms fire with Athii closed, but on Realme, OPPO, OnePlus and Xiaomi phones " +
+                        "swiping Athii away from Recents force-stops it, and Android then deletes " +
+                        "every alarm it set until you open Athii again. In App info, open Battery " +
+                        "usage and turn on Allow auto launch and Allow background activity, or lock " +
+                        "Athii in Recents.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                TextButton(onClick = ::openAppInfo, modifier = Modifier.fillMaxWidth()) {
+                    Text("Open App info")
+                }
                 OutlinedButton(
                     onClick = vm::testNotification,
                     enabled = !busy && notifications,

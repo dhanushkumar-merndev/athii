@@ -146,7 +146,7 @@ class TaskEditorViewModel(
                                 review = true,
                             )
                         }
-                        ?: ZonedDateTime.now().plusHours(1).withSecond(0).withNano(0).let {
+                        ?: defaultStart(ZonedDateTime.now(), fallbackOffset.toInt()).let {
                             TaskForm(
                                 date = it.toLocalDate().toString(),
                                 time = it.format(DateTimeFormatter.ofPattern("HH:mm")),
@@ -199,6 +199,15 @@ class TaskEditorViewModel(
     companion object {
         /** Lead times offered as chips. Anything else is entered as a custom minute count. */
         val OFFSET_PRESETS = listOf(0, 5, 10, 15, 30, 60)
+
+        /**
+         * A new task starts at the next five-minute mark that still leaves room for the default
+         * lead time, so saving straight away never trips the "reminder already passed" check.
+         */
+        fun defaultStart(now: ZonedDateTime, leadMinutes: Int): ZonedDateTime {
+            val earliest = now.plusMinutes(leadMinutes + 1L).withSecond(0).withNano(0)
+            return earliest.plusMinutes(((5 - earliest.minute % 5) % 5).toLong())
+        }
 
         fun parsedOffsetOrNull(form: TaskForm): Int? =
             form.offset.trim().ifBlank { "0" }.toIntOrNull()?.takeIf { it in 0..525600 }

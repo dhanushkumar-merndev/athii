@@ -114,20 +114,26 @@ fun DoctorsScreen(
             )
         }
         item {
-            DoctorFiltersRow(
-                attendance,
-                department,
-                day,
-                doctors
-                    .orEmpty()
-                    .map { it.department }
-                    .filter { it.isNotBlank() }
-                    .distinct()
-                    .sorted(),
-                { attendance = it },
-                { department = it },
-                { day = it },
-            )
+            Box(
+                if (tutorialTargets != null)
+                    Modifier.tutorialTarget("doctor_list_area", tutorialTargets)
+                else Modifier
+            ) {
+                DoctorFiltersRow(
+                    attendance,
+                    department,
+                    day,
+                    doctors
+                        .orEmpty()
+                        .map { it.department }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                        .sorted(),
+                    { attendance = it },
+                    { department = it },
+                    { day = it },
+                )
+            }
         }
         item { ErrorBanner(error) }
         if (doctors == null) item { CenterLoader() }

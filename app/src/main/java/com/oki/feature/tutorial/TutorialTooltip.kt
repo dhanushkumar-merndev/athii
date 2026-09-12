@@ -1,6 +1,6 @@
 package com.oki.feature.tutorial
 
-import androidx.compose.animation.*
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,22 +12,23 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 
 /**
- * Auto-positioned tooltip card for the guided tour.
+ * Tooltip card for the guided tour, placed from its measured size rather than guessed.
  *
- * Placement logic:
- * - If the highlighted target is in the **upper half** of the screen → show tooltip **below**.
- * - If the highlighted target is in the **lower half** → show tooltip **above**.
- * - Clamps horizontal position to keep the tooltip within safe screen margins.
+ * Goes below the highlighted target when it fits, otherwise above. A target too tall for either (a
+ * whole settings card) gets the card pinned to the bottom of the safe area, over the target,
+ * instead of pushed off screen. [targetBounds] must be in the same coordinates as this layout,
+ * which fills the overlay; status and navigation bar insets are kept clear.
  */
 @Composable
 fun TutorialTooltip(
@@ -43,126 +44,122 @@ fun TutorialTooltip(
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
-    val screenHeight = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val insetTop = WindowInsets.safeDrawing.getTop(density)
+    val insetBottom = WindowInsets.safeDrawing.getBottom(density)
+    val appear = remember(step.id) { Animatable(0f) }
+    LaunchedEffect(step.id) { appear.animateTo(1f, tween(220)) }
 
-    // Determine tooltip position: above or below the target.
-    val showBelow =
-        if (targetBounds == null) true // Center for full-screen overlays
-        else targetBounds.center.y < screenHeight / 2f
-
-    val tooltipPadding = 16.dp
-    val spotlightPadding = 12.dp // Extra padding around the spotlight
-
-    AnimatedVisibility(
-        visible = true,
-        enter =
-            fadeIn(tween(280)) +
-                slideInVertically(tween(280)) { if (showBelow) -it / 4 else it / 4 },
-        exit = fadeOut(tween(200)),
-        modifier = modifier,
-    ) {
-        Box(Modifier.fillMaxSize()) {
-            val alignment =
-                if (step.isWelcome || step.isFinal || targetBounds == null) {
-                    Alignment.Center
-                } else if (showBelow) {
-                    Alignment.TopCenter
-                } else {
-                    Alignment.BottomCenter
-                }
-
-            val yOffset: Dp =
-                if (step.isWelcome || step.isFinal || targetBounds == null) {
-                    0.dp
-                } else if (showBelow) {
-                    with(density) {
-                        (targetBounds.bottom + spotlightPadding.toPx() + 16.dp.toPx()).toDp()
-                    }
-                } else {
-                    // Tooltip above: need negative offset from bottom
-                    0.dp // Handled by BottomCenter alignment + padding
-                }
-
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = RoundedCornerShape(22.dp),
-                shadowElevation = 8.dp,
-                tonalElevation = 4.dp,
-                modifier =
-                    Modifier.align(alignment)
-                        .padding(horizontal = 20.dp)
-                        .then(
-                            if (step.isWelcome || step.isFinal || targetBounds == null) {
-                                Modifier.padding(horizontal = 8.dp)
-                            } else if (showBelow) {
-                                Modifier.offset {
-                                    IntOffset(0, with(density) { yOffset.roundToPx() })
-                                }
-                            } else {
-                                // Place above the target
-                                val topOfTarget = with(density) { targetBounds.top.toDp() }
-                                Modifier.padding(
-                                    bottom =
-                                        with(density) {
-                                            (screenHeight - targetBounds.top +
-                                                    spotlightPadding.toPx() +
-                                                    16.dp.toPx())
-                                                .toDp()
-                                        }
-                                )
-                            }
-                        )
-                        .widthIn(max = 380.dp)
-                        .semantics { liveRegion = LiveRegionMode.Polite },
-            ) {
-                Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Icon + Title
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        step.icon?.let { icon ->
-                            Icon(
-                                icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(26.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        Text(step.title, style = MaterialTheme.typography.titleMedium)
-                    }
-
-                    // Description
-                    Text(
-                        step.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Layout(
+        content = {
+            TooltipCard(
+                step,
+                stepIndex,
+                totalSteps,
+                onNext,
+                onPrevious,
+                onSkip,
+                onFinish,
+                onStartTour,
+            )
+        },
+        modifier = modifier.fillMaxSize().graphicsLayer { alpha = appear.value },
+    ) { measurables, constraints ->
+        val margin = 20.dp.roundToPx()
+        val gap = 14.dp.roundToPx()
+        val width = minOf(constraints.maxWidth - 2 * margin, 380.dp.roundToPx()).coerceAtLeast(0)
+        val top = insetTop + margin
+        val bottom = constraints.maxHeight - insetBottom - margin
+        val card =
+            measurables
+                .single()
+                .measure(
+                    Constraints(
+                        minWidth = width,
+                        maxWidth = width,
+                        maxHeight = (bottom - top).coerceAtLeast(0),
                     )
+                )
+        val y =
+            if (targetBounds == null) (constraints.maxHeight - card.height) / 2
+            else {
+                val below = targetBounds.bottom.roundToInt() + gap
+                val above = targetBounds.top.roundToInt() - gap - card.height
+                when {
+                    below + card.height <= bottom -> below
+                    above >= top -> above
+                    else -> bottom - card.height
+                }.coerceIn(top, (bottom - card.height).coerceAtLeast(top))
+            }
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            card.place((constraints.maxWidth - card.width) / 2, y)
+        }
+    }
+}
 
-                    // Step indicator (not for welcome/final)
-                    if (!step.isWelcome && !step.isFinal) {
-                        Text(
-                            "${stepIndex + 1} of $totalSteps",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    Spacer(Modifier.height(2.dp))
-
-                    // Navigation buttons
-                    when {
-                        step.isWelcome -> WelcomeButtons(onSkip, onStartTour)
-                        step.isFinal -> FinalButtons(onFinish)
-                        else ->
-                            StepButtons(
-                                stepIndex = stepIndex,
-                                onPrevious = onPrevious,
-                                onNext = onNext,
-                                onSkip = onSkip,
-                            )
-                    }
+@Composable
+private fun TooltipCard(
+    step: TutorialStep,
+    stepIndex: Int,
+    totalSteps: Int,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit,
+    onSkip: () -> Unit,
+    onFinish: () -> Unit,
+    onStartTour: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(22.dp),
+        shadowElevation = 8.dp,
+        tonalElevation = 4.dp,
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+    ) {
+        Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Icon + Title
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                step.icon?.let { icon ->
+                    Icon(
+                        icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(26.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                 }
+                Text(step.title, style = MaterialTheme.typography.titleMedium)
+            }
+
+            // Description
+            Text(
+                step.description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            // Step indicator (not for welcome/final)
+            if (!step.isWelcome && !step.isFinal) {
+                Text(
+                    "${stepIndex + 1} of $totalSteps",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Spacer(Modifier.height(2.dp))
+
+            // Navigation buttons
+            when {
+                step.isWelcome -> WelcomeButtons(onSkip, onStartTour)
+                step.isFinal -> FinalButtons(onFinish)
+                else ->
+                    StepButtons(
+                        stepIndex = stepIndex,
+                        onPrevious = onPrevious,
+                        onNext = onNext,
+                        onSkip = onSkip,
+                    )
             }
         }
     }

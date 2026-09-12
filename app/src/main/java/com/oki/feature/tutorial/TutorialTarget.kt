@@ -2,6 +2,7 @@ package com.oki.feature.tutorial
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -17,12 +18,21 @@ import androidx.compose.ui.layout.onGloballyPositioned
  */
 class TutorialTargetRegistry {
     val targets: SnapshotStateMap<String, Rect> = SnapshotStateMap()
+    private val owners = mutableMapOf<String, Any>()
 
-    fun register(key: String, bounds: Rect) {
+    fun register(key: String, bounds: Rect, owner: Any) {
+        owners[key] = owner
         targets[key] = bounds
     }
 
-    fun unregister(key: String) {
+    /**
+     * Only the composable that last registered [key] may remove it. When the first doctor card is
+     * replaced, the new card registers before the old one is disposed; an unconditional remove
+     * would erase the new card's bounds and the tour would treat the target as missing.
+     */
+    fun unregister(key: String, owner: Any) {
+        if (owners[key] !== owner) return
+        owners.remove(key)
         targets.remove(key)
     }
 
@@ -45,12 +55,13 @@ class TutorialTargetRegistry {
  */
 @Composable
 fun Modifier.tutorialTarget(key: String, registry: TutorialTargetRegistry): Modifier {
-    DisposableEffect(key) { onDispose { registry.unregister(key) } }
+    val owner = remember { Any() }
+    DisposableEffect(key) { onDispose { registry.unregister(key, owner) } }
     return this.onGloballyPositioned { coordinates ->
         try {
             val bounds = coordinates.boundsInWindow()
             if (bounds.width > 0f && bounds.height > 0f) {
-                registry.register(key, bounds)
+                registry.register(key, bounds, owner)
             }
         } catch (_: Exception) {
             // Layout may not be attached yet; ignore.

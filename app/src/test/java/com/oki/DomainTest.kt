@@ -18,6 +18,24 @@ class DomainTest {
     }
 
     @Test
+    fun newTaskStartsAtNextFiveMinuteMarkAfterLeadTime() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 12, 23, 33, 36, 0, zone)
+        assertEquals(
+            ZonedDateTime.of(2026, 9, 12, 23, 40, 0, 0, zone),
+            com.oki.feature.tasks.TaskEditorViewModel.defaultStart(now, 5),
+        )
+        assertEquals(
+            ZonedDateTime.of(2026, 9, 12, 23, 35, 0, 0, zone),
+            com.oki.feature.tasks.TaskEditorViewModel.defaultStart(now, 0),
+        )
+        assertEquals(
+            ZonedDateTime.of(2026, 9, 13, 0, 5, 0, 0, zone),
+            com.oki.feature.tasks.TaskEditorViewModel.defaultStart(now.withMinute(58), 5),
+        )
+    }
+
+    @Test
     fun customAndZeroOffsets() {
         assertEquals(1000L, TimeRules.reminderAt(601_000, 10))
         assertEquals(1000L, TimeRules.reminderAt(1000, 0))

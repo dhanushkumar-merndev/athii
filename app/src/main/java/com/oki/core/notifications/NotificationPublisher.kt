@@ -27,17 +27,16 @@ object ChannelIdentity {
         }
 
     /**
-     * [bypassAllowed] is the *effective* bypass, not the preference: Android drops the flag when
-     * the app has no Do Not Disturb access, and a channel's bypass is immutable once created.
-     * Keying the id on the effective value means granting access later produces a new channel that
-     * actually bypasses, instead of silently reusing a muted one.
+     * [throughDnd] switches the channel to alarm audio. A channel's audio usage is immutable once
+     * created, so it has to be part of the id. The old "_dnd" channels used notification audio,
+     * which Do Not Disturb mutes even when the channel is allowed through, so they are not reused.
      */
-    fun forSettings(settings: Settings, bypassAllowed: Boolean = false): String =
+    fun forSettings(settings: Settings, throughDnd: Boolean = false): String =
         when (settings.soundMode) {
             SoundMode.SYSTEM -> "reminders_default_v1"
             SoundMode.SILENT -> "reminders_silent_v1"
             SoundMode.CUSTOM -> "reminders_custom_" + fingerprint(settings.customSoundUri)
-        } + if (bypassAllowed) "_dnd" else ""
+        } + if (throughDnd) "_dnd_alarm" else ""
 
     /**
      * A channel's sound is immutable once Android creates it, so the chosen alarm tone has to be
@@ -57,6 +56,7 @@ class NotificationPublisher(private val context: Context) {
 
     companion object {
         const val ALARM_CHANNEL_PREFIX = "task_alarms_"
+        const val REMINDER_CHANNEL_PREFIX = "reminders_"
         const val ALARM_TIMEOUT_MS = 300_000L
     }
 
@@ -136,9 +136,17 @@ class NotificationPublisher(private val context: Context) {
                     Manifest.permission.POST_NOTIFICATIONS,
                 ) == PackageManager.PERMISSION_GRANTED)
 
+    /**
+     * With "Alert during Do Not Disturb" on, reminders play as alarm audio. Do Not Disturb mutes
+     * notification audio even for a channel it lets through, and this OEM ignores an app's bypass
+     * request besides, but it lets alarms ring by default. That needs no special access.
+     */
+    private fun remindersThroughDnd(settings: Settings) =
+        settings.bypassDnd && settings.soundMode != SoundMode.SILENT
+
     fun channel(settings: Settings): String {
-        val bypass = effectiveBypass(settings)
-        val id = ChannelIdentity.forSettings(settings, bypass)
+        val throughDnd = remindersThroughDnd(settings)
+        val id = ChannelIdentity.forSettings(settings, throughDnd)
         val uri =
             when (settings.soundMode) {
                 SoundMode.SYSTEM -> AndroidSettings.System.DEFAULT_NOTIFICATION_URI
@@ -169,14 +177,21 @@ class NotificationPublisher(private val context: Context) {
                     setSound(
                         uri,
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                            .setUsage(
+                                if (throughDnd) AudioAttributes.USAGE_ALARM
+                                else AudioAttributes.USAGE_NOTIFICATION
+                            )
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build(),
                     )
                     enableVibration(settings.soundMode != SoundMode.SILENT)
-                    setBypassDnd(bypass)
+                    setBypassDnd(throughDnd && canBypassDnd())
                 }
         )
+        // Every sound and Do Not Disturb choice is its own channel; drop the ones left behind.
+        manager.notificationChannels
+            .filter { it.id.startsWith(REMINDER_CHANNEL_PREFIX) && it.id != id }
+            .forEach { manager.deleteNotificationChannel(it.id) }
         return id
     }
 
@@ -226,7 +241,10 @@ class NotificationPublisher(private val context: Context) {
                 )
                 .setContentIntent(open)
                 .setAutoCancel(true)
-                .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setCategory(
+                    if (remindersThroughDnd(settings)) NotificationCompat.CATEGORY_ALARM
+                    else NotificationCompat.CATEGORY_REMINDER
+                )
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .addAction(0, "Mark done", action(task.id, "done"))
         if (kind == TaskNotificationKind.START)

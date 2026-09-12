@@ -98,6 +98,12 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             factory =
                 viewModelFactory { initializer { TutorialViewModel(c, createSavedStateHandle()) } }
         )
+    // Declared before the tour starts below, so its first step already honours this filter.
+    LaunchedEffect(tutorial) {
+        tutorial.controller.isStepAvailable = { step ->
+            !step.needsDoctor || !doctors.doctors.value.isNullOrEmpty()
+        }
+    }
     val tourActive by tutorial.isTourActive.collectAsStateWithLifecycle()
     val tourStep by tutorial.currentStep.collectAsStateWithLifecycle()
     val tourIndex by tutorial.currentStepIndex.collectAsStateWithLifecycle()
@@ -333,6 +339,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                             tutorial.replayTour()
                         },
                         tutorialTargets = c.tutorialTargets,
+                        tourTarget = if (tourActive) tourStep?.targetKey else null,
                     )
                 }
             }

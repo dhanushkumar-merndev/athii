@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
  * @param icon Optional leading icon for the tooltip.
  * @param isWelcome True for the opening welcome overlay (no spotlight).
  * @param isFinal True for the closing overlay (no spotlight).
+ * @param needsDoctor True when the target only exists once at least one doctor is saved.
  */
 data class TutorialStep(
     val id: String,
@@ -27,6 +28,8 @@ data class TutorialStep(
     val icon: ImageVector? = null,
     val isWelcome: Boolean = false,
     val isFinal: Boolean = false,
+    /** Points at a doctor record, so it is skipped outright when the directory is empty. */
+    val needsDoctor: Boolean = false,
 )
 
 /** All guided-tour steps in order. */
@@ -74,6 +77,7 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "home/doctors",
             targetKey = "doctor_card",
             icon = Icons.Outlined.Badge,
+            needsDoctor = true,
         ),
         TutorialStep(
             id = "attendance",
@@ -83,6 +87,7 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "home/doctors",
             targetKey = "attendance_chip",
             icon = Icons.Outlined.EventAvailable,
+            needsDoctor = true,
         ),
         TutorialStep(
             id = "edit_doctor",
@@ -92,6 +97,7 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "doctor_detail",
             targetKey = "edit_doctor",
             icon = Icons.Outlined.Edit,
+            needsDoctor = true,
         ),
         TutorialStep(
             id = "delete_doctor",
@@ -101,6 +107,7 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "doctor_detail",
             targetKey = "delete_doctor",
             icon = Icons.Outlined.DeleteOutline,
+            needsDoctor = true,
         ),
         TutorialStep(
             id = "search",

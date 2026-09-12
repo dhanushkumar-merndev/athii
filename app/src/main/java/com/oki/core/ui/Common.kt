@@ -63,6 +63,23 @@ abstract class ActionViewModel : ViewModel() {
             }
         }
     }
+
+    /**
+     * For instant preference writes. Leaves [busy] untouched: toggling it disables every control
+     * bound to it for a frame or two, which reads as the whole screen flickering on each tap.
+     */
+    fun quickAction(block: suspend () -> Unit) {
+        _error.value = null
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _error.value = friendlyError(e)
+            }
+        }
+    }
 }
 
 fun displayDate(time: Long): String =
