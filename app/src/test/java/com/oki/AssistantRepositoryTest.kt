@@ -51,6 +51,100 @@ class AssistantRepositoryTest {
         assertEquals(2, repo.ask("Add Dr A and Dr B").doctorDrafts.size)
     }
 
+    @Test
+    fun invalidSearchDateCanBeCorrectedWithoutLosingPreparedDrafts() = runTest {
+        val responses =
+            ArrayDeque(
+                listOf(
+                    call("draftTasks", """{"drafts":[{"title":"Read"}]}"""),
+                    call("searchTasks", """{"fromDate":"2026-99-99"}"""),
+                    buildJsonObject { put("content", "Review your reading task.") },
+                )
+            )
+        var correctionSent = false
+        val repo =
+            AssistantRepository(
+                AiRouter(
+                    GroqTransport { _, messages, _, _, _ ->
+                        if (responses.size == 1) {
+                            correctionSent =
+                                messages
+                                    .last()
+                                    .jsonObject["content"]!!
+                                    .jsonPrimitive
+                                    .content
+                                    .contains("Invalid fields")
+                        }
+                        responses.removeFirst()
+                    }
+                ),
+                AssistantToolExecutor { _, args ->
+                    java.time.LocalDate.parse(args["fromDate"]!!.jsonPrimitive.content)
+                    JsonNull
+                },
+            )
+        val answer = repo.ask("Prepare reading and find my tasks")
+        assertTrue(correctionSent)
+        assertEquals(listOf("Read"), answer.taskDrafts.map { it.title })
+    }
+
+    @Test
+    fun duplicateBatchesAreDeduplicatedAndAdditionalDraftsStopAtFifty() = runTest {
+        val fifty =
+            buildJsonObject {
+                    put(
+                        "drafts",
+                        buildJsonArray {
+                            repeat(50) { index ->
+                                add(buildJsonObject { put("title", "Task $index") })
+                            }
+                        },
+                    )
+                }
+                .toString()
+        val responses =
+            ArrayDeque(
+                listOf(
+                    call("draftTasks", fifty),
+                    call("draftTasks", """{"drafts":[{"title":"Task 0"},{"title":"Overflow"}]}"""),
+                    buildJsonObject { put("content", "Done") },
+                )
+            )
+        val repo =
+            AssistantRepository(
+                AiRouter(GroqTransport { _, _, _, _, _ -> responses.removeFirst() }),
+                AssistantToolExecutor { _, _ -> JsonNull },
+            )
+        val answer = repo.ask("Prepare my task list")
+        assertEquals(50, answer.taskDrafts.size)
+        assertEquals(50, answer.taskDrafts.map { it.title }.distinct().size)
+        assertTrue(answer.taskDrafts.none { it.title == "Overflow" })
+        assertTrue(answer.text.contains("missing"))
+    }
+
+    @Test
+    fun identicalItemsInOneCallStaySeparateButARepeatedBatchDoesNot() = runTest {
+        val five =
+            """{"drafts":[${List(5) { """{"title":"Dance","date":"2099-01-01","time":"18:00","alertMode":"ALARM"}""" }.joinToString(",")}]}"""
+        val responses =
+            ArrayDeque(
+                listOf(
+                    call("draftTasks", five),
+                    call("draftTasks", five),
+                    buildJsonObject { put("content", "Done") },
+                )
+            )
+        val repo =
+            AssistantRepository(
+                AiRouter(GroqTransport { _, _, _, _, _ -> responses.removeFirst() }),
+                AssistantToolExecutor { _, _ -> JsonNull },
+            )
+        val answer = repo.ask("create 5 dance tasks at 6pm with an alarm")
+        assertEquals(5, answer.taskDrafts.size)
+        assertTrue(answer.taskDrafts.all { it.alertMode == "ALARM" })
+        assertEquals(5, answer.reviewDrafts.map { it.id }.distinct().size)
+    }
+
     private fun call(name: String, args: String) = buildJsonObject {
         put(
             "tool_calls",

@@ -30,8 +30,9 @@ enum class TaskAlertMode {
 @Serializable
 @Entity(
     tableName = "tasks",
-    // Auto-delete sweeps completed tasks by age; keep that a range scan, not a table scan.
-    indices = [Index(value = ["isCompleted", "completedAt"])],
+    // Auto-delete sweeps completed tasks by age and reports read a start-date range; keep both
+    // range scans, not table scans.
+    indices = [Index(value = ["isCompleted", "completedAt"]), Index(value = ["dueAt"])],
 )
 data class Task(
     @PrimaryKey val id: String = UUID.randomUUID().toString(),
@@ -77,6 +78,22 @@ data class Doctor(
 
 @Entity(tableName = "maintenance")
 data class Maintenance(@PrimaryKey val key: String, val value: String)
+
+/**
+ * One row per doctor per local day (yyyy-MM-dd). The live status on [Doctor] resets at midnight;
+ * this keeps the day's final attendance for reports. Name, department and working days are copied
+ * so history survives edits and deletion.
+ */
+@Entity(tableName = "attendance_log", primaryKeys = ["date", "doctorId"])
+data class AttendanceLog(
+    val date: String,
+    val doctorId: String,
+    val doctorName: String,
+    val department: String,
+    val workingDays: String,
+    val status: Attendance,
+    val recordedAt: Long,
+)
 
 object TimeRules {
     /** End times belong to the task's selected date; overnight tasks need another date. */

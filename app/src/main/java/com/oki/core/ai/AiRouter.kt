@@ -13,7 +13,8 @@ import kotlinx.serialization.json.*
 const val GROQ_PRIMARY = "openai/gpt-oss-120b"
 const val GROQ_FALLBACK = "openai/gpt-oss-20b"
 const val GROQ_TERTIARY = "qwen/qwen3.6-27b"
-val GROQ_MODELS = listOf(GROQ_PRIMARY, GROQ_FALLBACK, GROQ_TERTIARY)
+const val GROQ_QUATERNARY = "qwen/qwen3.8-27b"
+val GROQ_MODELS = listOf(GROQ_PRIMARY, GROQ_FALLBACK, GROQ_TERTIARY, GROQ_QUATERNARY)
 const val GEMINI_PRIMARY = "gemini-3.5-flash"
 const val GEMINI_FALLBACK = "gemini-3.5-flash-lite"
 const val GEMINI_MODEL = GEMINI_PRIMARY
@@ -202,8 +203,14 @@ class AiRouter(
             val obj = call as? JsonObject ?: throw MalformedResult()
             val fn = obj["function"] as? JsonObject ?: throw MalformedResult()
             if (
-                obj["id"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
-                    fn["name"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()
+                (obj["id"] as? JsonPrimitive)
+                    ?.takeIf { it.isString }
+                    ?.contentOrNull
+                    .isNullOrBlank() ||
+                    (fn["name"] as? JsonPrimitive)
+                        ?.takeIf { it.isString }
+                        ?.contentOrNull
+                        .isNullOrBlank()
             )
                 throw MalformedResult()
             try {

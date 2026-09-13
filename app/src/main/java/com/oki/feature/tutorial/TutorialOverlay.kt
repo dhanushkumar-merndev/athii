@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
@@ -15,6 +16,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -50,6 +52,7 @@ fun TutorialOverlay(
     onConfirmSkip: () -> Unit,
     onCancelSkip: () -> Unit,
     onTargetUnavailable: () -> Unit,
+    navigationReady: Boolean = true,
 ) {
     val density = LocalDensity.current
     val spotlightPaddingPx = with(density) { 10.dp.toPx() }
@@ -59,6 +62,7 @@ fun TutorialOverlay(
 
     // Registry bounds are window coordinates; drawing happens in the overlay's own space.
     val onScreen: Rect? = run {
+        if (!navigationReady) return@run null
         val coordinates = overlay?.takeIf { it.isAttached } ?: return@run null
         val window =
             step.targetKey.takeIf { it.isNotEmpty() }?.let(registry::boundsFor) ?: return@run null
@@ -82,17 +86,27 @@ fun TutorialOverlay(
         settled = onScreen
     }
 
-    val waiting = step.targetKey.isNotEmpty() && settled == null
-    LaunchedEffect(step.id, waiting) {
-        if (waiting) {
+    val waiting = !navigationReady || (step.targetKey.isNotEmpty() && settled == null)
+    val latestUnavailable by rememberUpdatedState(onTargetUnavailable)
+    LaunchedEffect(step.id, waiting, showSkipConfirm) {
+        if (waiting && !showSkipConfirm) {
             delay(TARGET_TIMEOUT_MS)
-            onTargetUnavailable()
+            latestUnavailable()
+        }
+    }
+    // Keep a visible exit while a lazy target is being brought into view.
+    var showWaiting by remember(step.id) { mutableStateOf(false) }
+    LaunchedEffect(step.id, waiting) {
+        showWaiting = false
+        if (waiting) {
+            delay(350)
+            showWaiting = true
         }
     }
 
     // One smooth move per settled target, never a chase of per-frame layout updates.
-    val spot = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
-    var spotPlaced by remember { mutableStateOf(false) }
+    val spot = remember(step.screenRoute) { Animatable(Rect.Zero, Rect.VectorConverter) }
+    var spotPlaced by remember(step.screenRoute) { mutableStateOf(false) }
     val paddedTarget = settled?.inflate(spotlightPaddingPx)
     LaunchedEffect(paddedTarget) {
         val target = paddedTarget ?: return@LaunchedEffect
@@ -119,7 +133,7 @@ fun TutorialOverlay(
 
     val scrimColor = Color.Black.copy(alpha = 0.76f)
     val glowColor = MaterialTheme.colorScheme.primary
-    val showSpotlight = paddedTarget != null && !step.isWelcome && !step.isFinal
+    val showSpotlight = spotPlaced && paddedTarget != null && !step.isWelcome && !step.isFinal
 
     // Back button: go to previous step or show skip dialog.
     BackHandler { if (stepIndex > 0) onPrevious() else onSkip() }
@@ -158,13 +172,33 @@ fun TutorialOverlay(
                 step = step,
                 stepIndex = stepIndex,
                 totalSteps = totalSteps,
-                targetBounds = if (showSpotlight) paddedTarget else null,
+                targetBounds = if (showSpotlight) spot.value else null,
                 onNext = onNext,
                 onPrevious = onPrevious,
                 onSkip = onSkip,
                 onFinish = onFinish,
                 onStartTour = onStartTour,
             )
+        } else if (showWaiting) {
+            Surface(
+                modifier =
+                    Modifier.align(Alignment.BottomCenter)
+                        .safeDrawingPadding()
+                        .padding(20.dp)
+                        .testTag("tutorial-waiting"),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text("Opening ${step.title.lowercase()}…", Modifier.weight(1f))
+                    TextButton(onClick = onSkip) { Text("Skip") }
+                }
+            }
         }
     }
 

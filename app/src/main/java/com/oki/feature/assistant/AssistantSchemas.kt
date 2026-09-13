@@ -8,13 +8,16 @@ internal object AssistantSchemas {
             "title" to
                 "A concrete, useful task title. For random/example requests, choose an actual activity, never the literal words random task.",
             "notes" to "Helpful task details. Identify an example suggestion as a suggestion.",
-            "date" to "YYYY-MM-DD. Resolve relative dates using device time. Omit when unknown.",
+            "date" to
+                "YYYY-MM-DD. Resolve relative dates using device time. When the user gives no date, use today's device date.",
             "time" to
                 "Required start time HH:mm; omit when unknown, do not invent a time unless the user asks you to plan or suggest one.",
             "startTime" to "Same HH:mm start time as time, if known.",
             "endTime" to
                 "Optional HH:mm end time later than start on the same date. Omit if unknown.",
             "reminderOffsetMinutes" to "Use 0; the task reminder is at its start time.",
+            "alertMode" to
+                "ALARM when the user asks for an alarm, alarm mode or ringing; otherwise NOTIFICATION.",
         )
     private val doctorFields =
         mapOf(
@@ -66,6 +69,14 @@ internal object AssistantSchemas {
                                 )
                             if (field == "reminderOffsetMinutes")
                                 put("enum", buildJsonArray { add(0) })
+                            if (field == "alertMode")
+                                put(
+                                    "enum",
+                                    buildJsonArray {
+                                        add("NOTIFICATION")
+                                        add("ALARM")
+                                    },
+                                )
                             put("description", description)
                         },
                     )

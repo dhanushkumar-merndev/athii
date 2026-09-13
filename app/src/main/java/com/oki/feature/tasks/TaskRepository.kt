@@ -9,6 +9,15 @@ enum class TaskNotificationKind {
     END,
 }
 
+internal fun nextTaskReminder(task: Task): Pair<TaskNotificationKind, Long>? =
+    if (!task.reminderEnabled || task.isCompleted) null
+    else
+        listOfNotNull(
+                task.scheduledReminderAt?.let { TaskNotificationKind.START to it },
+                task.scheduledEndReminderAt?.let { TaskNotificationKind.END to it },
+            )
+            .minByOrNull { it.second }
+
 interface ReminderScheduler {
     fun validate(task: Task) {}
 
@@ -31,12 +40,11 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
         const val MAX_ACTIVE_TASKS = 300
 
         /**
-         * Android caps an app at 500 concurrent alarms and a task books up to two (start + end), so
-         * 300 tasks can want 600 alarms, over the ceiling. Only the soonest reminders are armed;
-         * the rest are armed later by [restore], which runs on launch, on boot, and at midnight.
-         * 180 tasks is at most 360 alarms, a wide margin under the ceiling.
+         * The Android scheduler arms one event per task and chains its next event after delivery.
+         * All 300 active tasks therefore fit below the platform's 500-alarm ceiling, even when each
+         * task has both start and end reminders.
          */
-        const val ARMED_REMINDER_LIMIT = 180
+        const val ARMED_REMINDER_LIMIT = MAX_ACTIVE_TASKS
     }
 
     suspend fun get(id: String) = dao.get(id)
@@ -69,8 +77,6 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                             }
                         }
                 } else null
-            val previous = dao.get(task.id)
-            scheduler.cancel(task.id)
             val saved =
                 task.copy(
                     title = task.title.trim(),
@@ -79,12 +85,10 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                         end?.takeIf { task.reminderEnabled && !task.isCompleted && it > now },
                     updatedAt = now,
                 )
-            try {
-                dao.put(saved)
-            } catch (e: Exception) {
-                previous?.let(scheduler::schedule)
-                throw e
-            }
+            // Keep the previous reminder alive if storage fails. Delivery uses this same mutex,
+            // so an old broadcast cannot race the committed replacement.
+            dao.put(saved)
+            scheduler.cancel(task.id)
             scheduler.dismiss(task.id)
             scheduler.schedule(saved)
         }
@@ -92,9 +96,12 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
     suspend fun complete(id: String, completed: Boolean) =
         mutex.withLock {
             val task = dao.get(id) ?: return@withLock
-            if (!completed) scheduler.validate(task.copy(isCompleted = false))
-            scheduler.cancel(id)
-            scheduler.dismiss(id)
+            if (!completed) {
+                require(dao.activeCountExcluding(id) < MAX_ACTIVE_TASKS) {
+                    "You have reached the limit of $MAX_ACTIVE_TASKS active tasks. Complete or delete a few tasks, then reopen this one."
+                }
+                scheduler.validate(task.copy(isCompleted = false))
+            }
             val candidate = TimeRules.reminderAt(task.dueAt, task.reminderOffsetMinutes)
             val changed =
                 task.copy(
@@ -117,14 +124,16 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                     updatedAt = System.currentTimeMillis(),
                 )
             dao.put(changed)
+            scheduler.cancel(id)
+            scheduler.dismiss(id)
             scheduler.schedule(changed)
         }
 
     suspend fun delete(id: String) =
         mutex.withLock {
+            dao.delete(id)
             scheduler.cancel(id)
             scheduler.dismiss(id)
-            dao.delete(id)
         }
 
     /**
@@ -148,16 +157,23 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
     }
 
     /**
-     * Re-arms reminders after launch, boot, or a clock change. Only the soonest
-     * [ARMED_REMINDER_LIMIT] tasks are armed, because the platform alarm budget is far smaller than
-     * the task cap; later ones are picked up the next time this runs.
+     * Re-arms future reminders after launch, boot, or a clock change. Keep persisted timestamps:
+     * process startup can recover before the already-due broadcast that started it is delivered.
      */
     suspend fun restore() =
         mutex.withLock {
             val now = System.currentTimeMillis()
             val all = dao.all()
             all.forEach { scheduler.cancel(it.id) }
-            all.asSequence()
+            val pending =
+                all.map { task ->
+                    task.copy(
+                        scheduledReminderAt = task.scheduledReminderAt?.takeIf { it > now },
+                        scheduledEndReminderAt = task.scheduledEndReminderAt?.takeIf { it > now },
+                    )
+                }
+            pending
+                .asSequence()
                 .filter { it.reminderEnabled && !it.isCompleted }
                 .mapNotNull { task ->
                     listOfNotNull(task.scheduledReminderAt, task.scheduledEndReminderAt)
@@ -187,18 +203,28 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                 return@withLock
             if (expectedAt > System.currentTimeMillis() + 1000) return@withLock
             publish(task)
-            dao.put(
+            val updated =
                 when (kind) {
                     TaskNotificationKind.START -> task.copy(scheduledReminderAt = null)
                     TaskNotificationKind.END -> task.copy(scheduledEndReminderAt = null)
                 }
+            dao.put(updated)
+            // Recovery may have armed an end alert after its start expired. Do not replay the
+            // older event, but keep its identity so a real broadcast in flight can still deliver.
+            scheduler.schedule(
+                updated.copy(
+                    scheduledReminderAt = updated.scheduledReminderAt?.takeIf { it >= expectedAt },
+                    scheduledEndReminderAt =
+                        updated.scheduledEndReminderAt?.takeIf { it >= expectedAt },
+                )
             )
         }
 
     suspend fun snooze(id: String, minutes: Int = 5) =
         mutex.withLock {
+            require(minutes in 1..525600) { "Choose a snooze between 1 and 525600 minutes." }
             val task = dao.get(id) ?: return@withLock
-            if (task.isCompleted) return@withLock
+            if (task.isCompleted || !task.reminderEnabled) return@withLock
             val updated =
                 task.copy(
                     reminderEnabled = true,
@@ -206,9 +232,9 @@ class TaskRepository(private val dao: TaskDao, private val scheduler: ReminderSc
                     updatedAt = System.currentTimeMillis(),
                 )
             scheduler.validate(updated)
+            dao.put(updated)
             scheduler.cancel(id)
             scheduler.dismiss(id)
-            dao.put(updated)
             scheduler.schedule(updated)
         }
 }

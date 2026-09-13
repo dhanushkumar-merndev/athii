@@ -67,6 +67,7 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
 
     init {
         viewModelScope.launch {
+            var historyReadFailed = false
             try {
                 val saved = c.chatHistory.read()
                 if (!locallyChanged) conversationStore.value = saved
@@ -75,11 +76,13 @@ class AssistantViewModel(private val c: AppContainer) : androidx.lifecycle.ViewM
             } catch (_: Exception) {
                 error.value =
                     "Could not open saved chats. Your tasks and doctors are still available."
-                historyReady.value = true
-                return@launch
+                historyReadFailed = true
             }
             historyReady.value = true
             conversationStore.collect { snapshot ->
+                // Preserve an unreadable file until the user starts or changes a conversation,
+                // then keep persisting new chats instead of disabling history for this session.
+                if (historyReadFailed && !locallyChanged) return@collect
                 try {
                     c.chatHistory.write(snapshot)
                 } catch (e: CancellationException) {
@@ -370,7 +373,7 @@ fun AssistantScreen(
                 }
                 item {
                     Text(
-                        "Groq first, then Gemini if needed. Questions, compact conversation context and matching records go to the responding provider. Chat history stays on this device.",
+                        "Questions, compact conversation context and matching records go to the responding provider. Chat history stays on this device.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )

@@ -69,12 +69,24 @@ data class ChatConversation(
     val updatedAt: Long? = null,
 )
 
-/** Keep the latest full exchange plus turns not yet covered by the stored summary. */
+/**
+ * Turns not yet covered by the stored summary, and always the most recent turns verbatim: the
+ * summary compresses older turns, but a reply to a clarifying question must keep the original
+ * request (item counts, dates, alert modes).
+ */
 internal fun summaryContext(conversation: ChatConversation): List<ChatMessage> {
     val covered = conversation.messages.indexOfFirst { it.id == conversation.summarizedThrough }
     return if (covered < 0 || conversation.summary.isBlank()) conversation.messages
-    else conversation.messages.drop((covered - 1).coerceAtLeast(0))
+    else
+        conversation.messages.drop(
+            minOf(
+                (covered - 1).coerceAtLeast(0),
+                (conversation.messages.size - RECENT_VERBATIM_MESSAGES).coerceAtLeast(0),
+            )
+        )
 }
+
+internal const val RECENT_VERBATIM_MESSAGES = 8
 
 /**
  * Local history has one writer. Replacing an entire snapshot keeps each draft's saved state

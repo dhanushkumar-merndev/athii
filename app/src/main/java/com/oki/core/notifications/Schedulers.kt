@@ -8,6 +8,7 @@ import com.oki.MainActivity
 import com.oki.core.storage.*
 import com.oki.feature.tasks.ReminderScheduler
 import com.oki.feature.tasks.TaskNotificationKind
+import com.oki.feature.tasks.nextTaskReminder
 import java.time.*
 
 class AndroidReminderScheduler(
@@ -49,44 +50,56 @@ class AndroidReminderScheduler(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+    /** Opens the task when the user taps the system's upcoming-alarm entry. */
+    private fun showTask(id: String) =
+        PendingIntent.getActivity(
+            context,
+            0,
+            Intent(context, MainActivity::class.java)
+                .setData(Uri.parse("oki://task/$id"))
+                .putExtra("task_id", id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
     override fun schedule(task: Task) {
         if (!task.reminderEnabled || task.isCompleted) return
-        val now = System.currentTimeMillis()
-        listOf(
-                TaskNotificationKind.START to task.scheduledReminderAt,
-                TaskNotificationKind.END to task.scheduledEndReminderAt,
-            )
-            .forEach { (kind, at) ->
-                if (at != null && at > now) {
-                    if (
-                        kind == TaskNotificationKind.START && task.alertMode == TaskAlertMode.ALARM
-                    ) {
-                        if (hasExactAccess() && publisher.canNotify()) {
-                            val show =
-                                PendingIntent.getActivity(
-                                    context,
-                                    0,
-                                    Intent(context, MainActivity::class.java)
-                                        .setData(Uri.parse("oki://task/${task.id}"))
-                                        .putExtra("task_id", task.id),
-                                    PendingIntent.FLAG_UPDATE_CURRENT or
-                                        PendingIntent.FLAG_IMMUTABLE,
-                                )
-                            try {
-                                alarm.setAlarmClock(
-                                    AlarmManager.AlarmClockInfo(at, show),
-                                    intent(task.id, at, kind),
-                                )
-                            } catch (_: SecurityException) {
-                                // Permission may be revoked after validation. Never turn an alarm
-                                // into an inexact reminder.
-                            } catch (_: IllegalStateException) {
-                                // Per-app alarm ceiling reached; see scheduleAlarm.
-                            }
-                        }
-                    } else scheduleAlarm(alarm, at, intent(task.id, at, kind), hasExactAccess())
-                }
-            }
+        // One pending platform alarm per task keeps 300 tasks with start and end alerts safely
+        // below Android's alarm ceiling. Delivery arms the remaining event for this task.
+        nextTaskReminder(task)?.let { (kind, at) ->
+            // A Notify now timestamp can pass while Room commits. Android dispatches
+            // past triggers immediately; dropping it here would silently lose the alert.
+            val pending = intent(task.id, at, kind)
+            val alarmMode =
+                kind == TaskNotificationKind.START && task.alertMode == TaskAlertMode.ALARM
+            // Every on-time reminder uses an alarm clock. OEM builds batch exact-and-allow-
+            // while-idle alarms: ColorOS on a Realme RMX2161 gave one a +2m20s window and posted a
+            // 10:25:00 reminder at 10:26:29. Alarm clocks are never batched; the cost is the
+            // status-bar alarm icon while one is pending.
+            if (alarmMode) {
+                // Never turn an alarm into an inexact reminder: skip without full access.
+                if (hasExactAccess() && publisher.canNotify())
+                    scheduleAlarmClock(at, task.id, pending, inexactFallback = false)
+            } else if (hasExactAccess()) {
+                scheduleAlarmClock(at, task.id, pending, inexactFallback = true)
+            } else scheduleAlarm(alarm, at, pending, exact = false)
+        }
+    }
+
+    private fun scheduleAlarmClock(
+        at: Long,
+        id: String,
+        pending: PendingIntent,
+        inexactFallback: Boolean,
+    ) {
+        try {
+            alarm.setAlarmClock(AlarmManager.AlarmClockInfo(at, showTask(id)), pending)
+        } catch (_: SecurityException) {
+            // Exact access can be revoked between the check and the call. A notification must
+            // not be dropped, so it falls back to inexact; an alarm must never become inexact.
+            if (inexactFallback) scheduleAlarm(alarm, at, pending, exact = false)
+        } catch (_: IllegalStateException) {
+            // Per-app alarm ceiling reached; see scheduleAlarm.
+        }
     }
 
     override fun cancel(id: String) {

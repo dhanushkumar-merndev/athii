@@ -185,17 +185,18 @@ class AiEnhancementsTest {
     }
 
     @Test
-    fun summaryKeepsRecentExchangeAndNewRequestExactlyOnce() {
-        val turns = (0..5).map { ChatMessage(id = "$it", text = "Turn $it", user = it % 2 == 0) }
+    fun summaryKeepsRecentTurnsVerbatimAndNewRequestExactlyOnce() {
+        val turns = (0..11).map { ChatMessage(id = "$it", text = "Turn $it", user = it % 2 == 0) }
         val chat =
             ChatConversation(
                 title = "Chat",
                 messages = turns,
                 summary = "Remember the appointment",
-                summarizedThrough = "5",
+                summarizedThrough = "11",
             )
         val context = conversationContext("Change its time", summaryContext(chat), chat.summary)
-        assertEquals(4, context.size)
+        // Summary, the seven most recent turns and the new request.
+        assertEquals(9, context.size)
         assertTrue(
             context
                 .first()
@@ -204,12 +205,14 @@ class AiEnhancementsTest {
                 .content
                 .contains("Remember the appointment")
         )
-        assertEquals("Turn 4", context[1].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("Turn 5", context[1].jsonObject["content"]!!.jsonPrimitive.content)
         assertEquals(
             "Change its time",
             context.last().jsonObject["content"]!!.jsonPrimitive.content,
         )
-        assertFalse(context.toString().contains("Turn 0"))
+        val contents = context.map { it.jsonObject["content"]!!.jsonPrimitive.content }
+        assertFalse("Turn 4" in contents)
+        assertEquals(1, contents.count { it == "Change its time" })
     }
 
     @Test
@@ -268,7 +271,8 @@ class AiEnhancementsTest {
         assertFalse(task.reminderEnabled)
         assertEquals("13:00", task.endTime)
         assertTrue(
-            runCatching { reviewTask(draft.copy(task = draft.task!!.copy(date = null))) }.isFailure
+            runCatching { reviewTask(draft.copy(task = draft.task!!.copy(date = "2099-13-40"))) }
+                .isFailure
         )
         assertTrue(
             runCatching { reviewTask(draft.copy(task = draft.task!!.copy(endTime = "11:00"))) }

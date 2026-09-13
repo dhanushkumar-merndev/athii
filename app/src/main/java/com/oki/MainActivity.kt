@@ -98,41 +98,38 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             factory =
                 viewModelFactory { initializer { TutorialViewModel(c, createSavedStateHandle()) } }
         )
-    // Declared before the tour starts below, so its first step already honours this filter.
-    LaunchedEffect(tutorial) {
-        tutorial.controller.isStepAvailable = { step ->
-            !step.needsDoctor || !doctors.doctors.value.isNullOrEmpty()
-        }
+    val tourTasks by tasks.tasks.collectAsStateWithLifecycle()
+    val tourDoctors by doctors.doctors.collectAsStateWithLifecycle()
+    LaunchedEffect(tourTasks, tourDoctors) {
+        if (tourTasks != null && tourDoctors != null)
+            tutorial.controller.updateDataAvailability(
+                hasTasks = !tourTasks.isNullOrEmpty(),
+                hasDoctors = !tourDoctors.isNullOrEmpty(),
+            )
     }
     val tourActive by tutorial.isTourActive.collectAsStateWithLifecycle()
     val tourStep by tutorial.currentStep.collectAsStateWithLifecycle()
-    val tourIndex by tutorial.currentStepIndex.collectAsStateWithLifecycle()
+    val tourIndex by tutorial.visibleStepIndex.collectAsStateWithLifecycle()
+    val tourTotal by tutorial.totalSteps.collectAsStateWithLifecycle()
     val tourNavRequest by tutorial.pendingNavigation.collectAsStateWithLifecycle()
     val tourShowSkip by tutorial.showSkipConfirm.collectAsStateWithLifecycle()
-    // Start tour on first launch.
-    LaunchedEffect(Unit) { tutorial.startTourIfNeeded() }
     // Handle tutorial navigation requests.
     LaunchedEffect(tourNavRequest) {
         val request = tourNavRequest ?: return@LaunchedEffect
-        tutorial.consumeNavigation()
         when (request.route) {
             "home/tasks" -> {
                 if (destinationRoute != "home") nav.popBackStack("home", false)
-                scope.launch {
-                    pager.animateScrollToPage(
-                        0,
-                        animationSpec = tween(250, easing = FastOutSlowInEasing),
-                    )
-                }
+                pager.animateScrollToPage(
+                    0,
+                    animationSpec = tween(250, easing = FastOutSlowInEasing),
+                )
             }
             "home/doctors" -> {
                 if (destinationRoute != "home") nav.popBackStack("home", false)
-                scope.launch {
-                    pager.animateScrollToPage(
-                        1,
-                        animationSpec = tween(250, easing = FastOutSlowInEasing),
-                    )
-                }
+                pager.animateScrollToPage(
+                    1,
+                    animationSpec = tween(250, easing = FastOutSlowInEasing),
+                )
             }
             "settings" -> {
                 if (destinationRoute != "settings")
@@ -146,6 +143,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                     nav.navigate("doctor/$firstId")
             }
         }
+        tutorial.consumeNavigation(request)
     }
     var add by remember { mutableStateOf(false) }
     val addSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -182,6 +180,12 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             setupDismissed = true
             scope.launch { c.settings.setSetupPromptDismissed(true) }
         }
+    // Start the tour on first launch only once the permission sheet is settled, so the welcome
+    // card never opens underneath it.
+    val setupSettled = storedSettings != null && !setupNeeded
+    LaunchedEffect(tourTasks != null && tourDoctors != null, setupSettled) {
+        if (tourTasks != null && tourDoctors != null && setupSettled) tutorial.startTourIfNeeded()
+    }
     LifecycleResumeEffect(Unit) {
         val job =
             scope.launch {
@@ -267,6 +271,18 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                                 Icon(Icons.Outlined.History, "Chat history")
                             }
                         }
+                        if (pager.currentPage != 2) {
+                            val reportKind =
+                                if (pager.currentPage == 1)
+                                    com.oki.core.export.ReportKind.ATTENDANCE
+                                else com.oki.core.export.ReportKind.TASKS
+                            key(reportKind) {
+                                com.oki.core.ui.ExportReportButton(
+                                    reportKind,
+                                    Modifier.tutorialTarget("export_report", c.tutorialTargets),
+                                )
+                            }
+                        }
                         IconButton(
                             onClick = { nav.navigate("settings") { launchSingleTop = true } },
                             modifier = Modifier.tutorialTarget("settings_icon", c.tutorialTargets),
@@ -296,12 +312,20 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                         beyondViewportPageCount = 1,
                     ) { page ->
                         when (page) {
-                            0 -> TasksScreen(tasks, c.tutorialTargets) { editor(false, it) }
+                            0 ->
+                                TasksScreen(
+                                    tasks,
+                                    c.tutorialTargets,
+                                    tourTarget = if (tourActive) tourStep?.targetKey else null,
+                                ) {
+                                    editor(false, it)
+                                }
                             1 ->
                                 DoctorsScreen(
                                     doctors,
                                     { nav.navigate("doctor/$it") },
                                     c.tutorialTargets,
+                                    tourTarget = if (tourActive) tourStep?.targetKey else null,
                                 )
                             2 ->
                                 AssistantScreen(
@@ -351,6 +375,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                         { editor(true, back.arguments!!.getString("id")) },
                         { nav.popBackStack() },
                         tutorialTargets = c.tutorialTargets,
+                        tourTarget = if (tourActive) tourStep?.targetKey else null,
                     )
                 }
             }
@@ -386,6 +411,7 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
                         c.reminders::hasExactAccess,
                         { nav.navigate("settings") },
                         {
+                            if (vm.savedTaskIsUpcoming.value) tasks.showUpcoming()
                             back.savedStateHandle.get<String>("assistantMessageId")?.let {
                                 assistant.markDraftSaved(it)
                             }
@@ -485,7 +511,21 @@ fun OkiApp(c: AppContainer, openingTask: String?, consumeTask: () -> Unit) {
             TutorialOverlay(
                 step = step,
                 stepIndex = tourIndex,
-                totalSteps = tutorial.totalSteps,
+                totalSteps = tourTotal,
+                navigationReady =
+                    tourNavRequest == null &&
+                        when (step.screenRoute) {
+                            "home/tasks" ->
+                                destinationRoute == "home" &&
+                                    pager.currentPage == 0 &&
+                                    !pager.isScrollInProgress
+                            "home/doctors" ->
+                                destinationRoute == "home" &&
+                                    pager.currentPage == 1 &&
+                                    !pager.isScrollInProgress
+                            "doctor_detail" -> destinationRoute.startsWith("doctor/")
+                            else -> destinationRoute == step.screenRoute
+                        },
                 registry = c.tutorialTargets,
                 onNext = tutorial::next,
                 onPrevious = tutorial::previous,

@@ -1,8 +1,10 @@
 package com.oki.core.notifications
 
 import android.content.*
+import android.util.Log
 import com.oki.OkiApplication
 import com.oki.feature.tasks.TaskNotificationKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -35,6 +37,12 @@ class ReminderReceiver : BroadcastReceiver() {
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Access can be revoked while a notification is still visible. A stale Snooze
+                // action must not crash the app; the existing alert stays available to open.
+                Log.w("ReminderReceiver", "Could not handle reminder action ${intent.action}", e)
             } finally {
                 pending.finish()
             }

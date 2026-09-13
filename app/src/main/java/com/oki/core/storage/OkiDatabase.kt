@@ -34,6 +34,10 @@ interface TaskDao {
 
     @Query("DELETE FROM tasks WHERE isCompleted = 1") suspend fun deleteCompleted(): Int
 
+    /** Reports read one start-date range through index_tasks_dueAt. */
+    @Query("SELECT * FROM tasks WHERE dueAt >= :from AND dueAt < :to ORDER BY dueAt")
+    suspend fun dueBetween(from: Long, to: Long): List<Task>
+
     /** One indexed COUNT, so the cap check does not scale with the size of the table. */
     @Query("SELECT COUNT(*) FROM tasks WHERE isCompleted = 0 AND id != :excludeId")
     suspend fun activeCountExcluding(excludeId: String): Int
@@ -97,9 +101,33 @@ interface MaintenanceDao {
     @Upsert suspend fun put(value: Maintenance)
 }
 
+@Dao
+interface AttendanceLogDao {
+    /** Copies every doctor's current attendance into [date] in one statement. */
+    @Query(
+        "INSERT OR REPLACE INTO attendance_log (date, doctorId, doctorName, department, workingDays, status, recordedAt) SELECT :date, id, doctorName, department, workingDays, attendanceStatus, :now FROM doctors"
+    )
+    suspend fun snapshot(date: String, now: Long)
+
+    @Query(
+        "INSERT OR REPLACE INTO attendance_log (date, doctorId, doctorName, department, workingDays, status, recordedAt) SELECT :date, id, doctorName, department, workingDays, attendanceStatus, :now FROM doctors WHERE id = :id"
+    )
+    suspend fun snapshotDoctor(date: String, id: String, now: Long)
+
+    /** The primary key leads with date, so a report range is an index range scan. */
+    @Query(
+        "SELECT * FROM attendance_log WHERE date >= :from AND date <= :to ORDER BY date, doctorName COLLATE NOCASE"
+    )
+    suspend fun between(from: String, to: String): List<AttendanceLog>
+
+    @Query("SELECT MIN(date) FROM attendance_log") suspend fun firstDate(): String?
+
+    @Query("DELETE FROM attendance_log") suspend fun clear()
+}
+
 @Database(
-    entities = [Task::class, Doctor::class, Maintenance::class],
-    version = 5,
+    entities = [Task::class, Doctor::class, Maintenance::class, AttendanceLog::class],
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -110,7 +138,21 @@ abstract class OkiDatabase : RoomDatabase() {
 
     abstract fun maintenance(): MaintenanceDao
 
+    abstract fun attendanceLog(): AttendanceLogDao
+
     companion object {
+        val MIGRATION_5_6 =
+            object : Migration(5, 6) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `attendance_log` (`date` TEXT NOT NULL, `doctorId` TEXT NOT NULL, `doctorName` TEXT NOT NULL, `department` TEXT NOT NULL, `workingDays` TEXT NOT NULL, `status` TEXT NOT NULL, `recordedAt` INTEGER NOT NULL, PRIMARY KEY(`date`, `doctorId`))"
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_tasks_dueAt` ON `tasks` (`dueAt`)"
+                    )
+                }
+            }
+
         val MIGRATION_4_5 =
             object : Migration(4, 5) {
                 override fun migrate(db: SupportSQLiteDatabase) {

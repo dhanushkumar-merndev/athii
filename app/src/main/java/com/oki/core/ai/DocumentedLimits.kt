@@ -9,7 +9,7 @@ data class DocumentedLimits(
     val requestsPerMinute: Long? = null,
     val requestsPerDay: Long? = null,
     val sourceUrl: String,
-    val checkedOn: String = "2026-09-12",
+    val checkedOn: String = "2026-09-13",
 )
 
 private val freeTierLimits = buildMap {
@@ -21,9 +21,8 @@ private val freeTierLimits = buildMap {
             requestsPerDay = 1_000,
             sourceUrl = "https://console.groq.com/docs/rate-limits",
         )
-    listOf("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b").forEach {
-        put(ModelIdentity(Provider.GROQ, it), groq)
-    }
+    listOf("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b", "qwen/qwen3.8-27b")
+        .forEach { put(ModelIdentity(Provider.GROQ, it), groq) }
     // Google publishes project-specific limits in AI Studio. Paid batch-enqueued token
     // limits and model context windows are not free-tier token quotas.
     listOf("gemini-3.5-flash", "gemini-3.5-flash-lite").forEach {

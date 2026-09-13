@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,6 +34,9 @@ import com.oki.core.ui.*
 import com.oki.feature.tutorial.TutorialTargetRegistry
 import com.oki.feature.tutorial.tutorialTarget
 import java.time.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 private enum class TaskListFilter {
     UPCOMING,
@@ -44,6 +48,7 @@ private enum class TaskListFilter {
 fun TasksScreen(
     vm: TasksViewModel,
     tutorialTargets: TutorialTargetRegistry? = null,
+    tourTarget: String? = null,
     edit: (String) -> Unit,
 ) {
     val tasks by vm.tasks.collectAsStateWithLifecycle()
@@ -52,22 +57,55 @@ fun TasksScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(TaskListFilter.UPCOMING) }
     var deleting by remember { mutableStateOf<Task?>(null) }
-    val now = System.currentTimeMillis()
-    val filtered =
-        remember(tasks, query, filter, now) {
-            tasks.orEmpty().filter {
-                when (filter) {
-                    TaskListFilter.UPCOMING -> !it.isCompleted && it.dueAt >= now
-                    TaskListFilter.OVERDUE -> !it.isCompleted && it.dueAt < now
-                    TaskListFilter.COMPLETED -> it.isCompleted
-                } && (it.title.contains(query, true) || it.notes.contains(query, true))
+    val listState = rememberLazyListState()
+    LaunchedEffect(vm) {
+        vm.showUpcoming.collect {
+            query = ""
+            filter = TaskListFilter.UPCOMING
+            listState.animateScrollToItem(0)
+        }
+    }
+    val now by
+        produceState(System.currentTimeMillis()) {
+            while (true) {
+                delay(1000)
+                value = System.currentTimeMillis()
             }
         }
+    // Show saved tasks during a replay even if the selected tab or search would hide them.
+    // Those choices remain intact when the tour ends.
+    val touringTasks = tourTarget in setOf("task_card", "task_checkbox", "task_delete")
+    val filtered =
+        remember(tasks, query, filter, now, touringTasks) {
+            tasks.orEmpty().filter {
+                touringTasks ||
+                    (when (filter) {
+                        TaskListFilter.UPCOMING -> !it.isCompleted && it.dueAt >= now
+                        TaskListFilter.OVERDUE -> !it.isCompleted && it.dueAt < now
+                        TaskListFilter.COMPLETED -> it.isCompleted
+                    } && (it.title.contains(query, true) || it.notes.contains(query, true)))
+            }
+        }
+    LaunchedEffect(tourTarget, filtered.firstOrNull()?.id) {
+        val index =
+            when (tourTarget) {
+                "task_dashboard" -> 0
+                "task_search" -> 1
+                "task_filters" -> 2
+                "task_card",
+                "task_checkbox",
+                "task_delete" -> if (filtered.isNotEmpty()) 4 else return@LaunchedEffect
+                else -> return@LaunchedEffect
+            }
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > index }
+        listState.animateScrollToItem(index)
+    }
     val searchSuggestions =
         remember(tasks) { tasks.orEmpty().flatMap { listOf(it.title, it.notes) } }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 22.dp),
+            state = listState,
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 100.dp),
         ) {
@@ -111,19 +149,29 @@ fun TasksScreen(
                 }
             }
             item {
-                Column {
-                    InlineAutocompleteField(
-                        value = query,
-                        change = { query = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Search tasks") },
-                        leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                        suggestions = searchSuggestions,
-                    )
-                }
+                InlineAutocompleteField(
+                    value = query,
+                    change = { query = it },
+                    modifier =
+                        Modifier.fillMaxWidth().let {
+                            if (tutorialTargets != null)
+                                it.tutorialTarget("task_search", tutorialTargets)
+                            else it
+                        },
+                    placeholder = { Text("Search tasks") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                    suggestions = searchSuggestions,
+                )
             }
             item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().let {
+                        if (tutorialTargets != null)
+                            it.tutorialTarget("task_filters", tutorialTargets)
+                        else it
+                    },
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     TaskListFilter.entries.forEach { option ->
                         FilterChip(
                             selected = filter == option,
@@ -172,8 +220,13 @@ fun TasksScreen(
                     }
                 }
             items(filtered, key = { it.id }) { task ->
+                val firstTargets = tutorialTargets?.takeIf { task.id == filtered.firstOrNull()?.id }
                 Surface(
-                    modifier = Modifier.animateItem().fillMaxWidth(),
+                    modifier =
+                        Modifier.animateItem().fillMaxWidth().let {
+                            if (firstTargets != null) it.tutorialTarget("task_card", firstTargets)
+                            else it
+                        },
                     shape = RoundedCornerShape(20.dp),
                     color = MaterialTheme.colorScheme.surfaceContainer,
                 ) {
@@ -182,7 +235,13 @@ fun TasksScreen(
                             .padding(vertical = 12.dp, horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        RoundedTaskCheckbox(task.isCompleted) { vm.complete(task) }
+                        Box(
+                            if (firstTargets != null)
+                                Modifier.tutorialTarget("task_checkbox", firstTargets)
+                            else Modifier
+                        ) {
+                            RoundedTaskCheckbox(task.isCompleted) { vm.complete(task) }
+                        }
                         Spacer(Modifier.width(16.dp))
                         Column(
                             Modifier.weight(1f).padding(vertical = 6.dp),
@@ -214,7 +273,13 @@ fun TasksScreen(
                                     color = MaterialTheme.colorScheme.secondary,
                                 )
                         }
-                        IconButton(onClick = { deleting = task }) {
+                        IconButton(
+                            onClick = { deleting = task },
+                            modifier =
+                                if (firstTargets != null)
+                                    Modifier.tutorialTarget("task_delete", firstTargets)
+                                else Modifier,
+                        ) {
                             Icon(
                                 Icons.Outlined.DeleteOutline,
                                 "Delete ${task.title}",
@@ -279,10 +344,13 @@ fun TaskEditorScreen(
     val busy by vm.busy.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val saved by vm.saved.collectAsStateWithLifecycle()
+    val completed by vm.isCompleted.collectAsStateWithLifecycle()
     val autocomplete by vm.autocomplete.collectAsStateWithLifecycle()
     var pastDialog by remember { mutableStateOf(false) }
     var permissionWarning by remember { mutableStateOf(false) }
     var alarmAccessWarning by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val notificationRequest =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
             permissionWarning = true
@@ -304,8 +372,33 @@ fun TaskEditorScreen(
         if (busy) CenterLoader(Modifier.fillMaxSize())
         return
     }
+    if (completed) {
+        LazyColumn(
+            Modifier.fillMaxSize().padding(horizontal = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 28.dp),
+        ) {
+            item {
+                PageHeading(
+                    "Completed task",
+                    "This task is read-only. Reopen it from the list to make changes.",
+                )
+            }
+            item { ReadOnlyTaskDetail("Title", f.title) }
+            f.notes.takeIf(String::isNotBlank)?.let { notes ->
+                item { ReadOnlyTaskDetail("Notes", notes) }
+            }
+            item { ReadOnlyTaskDetail("Start", "${f.date} · ${f.time}") }
+            f.endTime.takeIf(String::isNotBlank)?.let { end ->
+                item { ReadOnlyTaskDetail("End", end) }
+            }
+            item { TextButton(onClick = back, modifier = Modifier.fillMaxWidth()) { Text("Back") } }
+        }
+        return
+    }
     LazyColumn(
         Modifier.fillMaxSize().imePadding().padding(horizontal = 22.dp),
+        state = listState,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 28.dp),
     ) {
@@ -362,6 +455,12 @@ fun TaskEditorScreen(
             }
         }
         if (f.reminder) {
+            if (vm.reminderMovesToStartTime())
+                item {
+                    SuggestionCard(
+                        "The selected lead time has already passed, so this reminder will notify at the future start time."
+                    )
+                }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     TaskAlertMode.entries.forEach { mode ->
@@ -503,29 +602,54 @@ fun TaskEditorScreen(
                 )
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        pastDialog = false
-                        vm.save(notifyNow = true)
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+                    TextButton(
+                        onClick = {
+                            pastDialog = false
+                            vm.save(notifyNow = true)
+                        }
+                    ) {
+                        Text(if (f.alertMode == TaskAlertMode.ALARM) "Ring now" else "Notify now")
                     }
-                ) {
-                    Text(if (f.alertMode == TaskAlertMode.ALARM) "Ring now" else "Notify now")
-                }
-            },
-            dismissButton = {
-                Column {
                     TextButton(
                         onClick = {
                             pastDialog = false
                             vm.save(withoutReminder = true)
                         }
                     ) {
-                        Text("Save without notifications")
+                        Text(
+                            if (f.alertMode == TaskAlertMode.ALARM) "Save without an alert"
+                            else "Save without notifications"
+                        )
                     }
-                    TextButton(onClick = { pastDialog = false }) { Text("Change start time") }
+                    TextButton(
+                        onClick = {
+                            pastDialog = false
+                            scope.launch { listState.animateScrollToItem(if (f.review) 4 else 3) }
+                        }
+                    ) {
+                        Text("Change start time")
+                    }
                 }
             },
         )
+}
+
+@Composable
+private fun ReadOnlyTaskDetail(label: String, value: String) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(16.dp)) {
+        Column(
+            Modifier.fillMaxWidth().padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(value, style = MaterialTheme.typography.bodyLarge)
+        }
+    }
 }
 
 @Composable
@@ -637,7 +761,7 @@ fun EndTimeField(endTime: String, endTimeChange: (String) -> Unit) {
 fun ReminderLeadTimeField(offset: String, alarm: Boolean, change: (String) -> Unit) {
     val minutes = offset.trim().toIntOrNull()
     val preset = minutes != null && minutes in TaskEditorViewModel.OFFSET_PRESETS
-    var custom by rememberSaveable(offset) { mutableStateOf(minutes != null && !preset) }
+    var custom by rememberSaveable { mutableStateOf(minutes != null && !preset) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Remind me", style = MaterialTheme.typography.titleMedium)
         Text(

@@ -17,6 +17,43 @@ class ChatPersistenceTest {
     @get:Rule val rule = createComposeRule()
 
     @Test
+    fun unreadableHistoryDoesNotPreventSavingNewConversations() {
+        val app = ApplicationProvider.getApplicationContext<OkiApplication>()
+        val c = app.container
+        val original = runBlocking { c.chatHistory.read() }
+        val store = ViewModelStore()
+        try {
+            java.io.File(app.filesDir, "chat-history.json").writeText("{broken history")
+            lateinit var vm: AssistantViewModel
+            rule.runOnIdle {
+                vm = AssistantViewModel(c)
+                store.put("chat", vm)
+            }
+            rule.waitUntil(5000) { vm.historyReady.value }
+            assertTrue(vm.error.value!!.contains("Could not open saved chats"))
+            assertEquals(
+                "{broken history",
+                java.io.File(app.filesDir, "chat-history.json").readText(),
+            )
+            val recovered =
+                ChatConversation(
+                    id = "recovered-history-fixture",
+                    title = "New conversation",
+                    messages = listOf(ChatMessage(text = "New message", user = true)),
+                )
+            rule.runOnIdle { vm.restoreHistory(listOf(recovered)) }
+            rule.waitUntil(5000) {
+                runBlocking {
+                    runCatching { c.chatHistory.read() == listOf(recovered) }.getOrDefault(false)
+                }
+            }
+        } finally {
+            rule.runOnIdle { store.clear() }
+            runBlocking { c.chatHistory.write(original) }
+        }
+    }
+
+    @Test
     fun recreatedViewModelLoadsHistoryAndRetainsEachCreatedDraft() {
         val c = ApplicationProvider.getApplicationContext<OkiApplication>().container
         val stores = listOf(ViewModelStore(), ViewModelStore())

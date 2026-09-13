@@ -21,19 +21,26 @@ class TutorialViewModel(private val c: AppContainer, private val savedState: Sav
 
     val isTourActive: StateFlow<Boolean> = controller.isTourActive
     val currentStepIndex: StateFlow<Int> = controller.currentStepIndex
+    val visibleStepIndex: StateFlow<Int> = controller.visibleStepIndex
     val currentStep: StateFlow<TutorialStep?> = controller.currentStep
     val pendingNavigation: StateFlow<NavigationRequest?> = controller.pendingNavigation
     val showSkipConfirm: StateFlow<Boolean> = controller.showSkipConfirm
-    val totalSteps: Int
-        get() = controller.totalSteps
+    val totalSteps: StateFlow<Int> = controller.totalSteps
 
     init {
         // Restore step index after process death.
         val restored = savedState.get<Int>(KEY_STEP_INDEX)
-        if (restored != null) controller.restoreIndex(restored)
+        if (savedState.get<Boolean>(KEY_ACTIVE) == true && restored != null)
+            controller.restoreIndex(restored)
         // Persist step index on every change.
         viewModelScope.launch {
-            controller.currentStepIndex.collect { savedState[KEY_STEP_INDEX] = it }
+            combine(controller.currentStepIndex, controller.isTourActive) { index, active ->
+                    index to active
+                }
+                .collect { (index, active) ->
+                    savedState[KEY_STEP_INDEX] = index
+                    savedState[KEY_ACTIVE] = active
+                }
         }
     }
 
@@ -55,7 +62,7 @@ class TutorialViewModel(private val c: AppContainer, private val savedState: Sav
 
     fun finish() = controller.finish()
 
-    fun consumeNavigation() = controller.consumeNavigation()
+    fun consumeNavigation(request: NavigationRequest) = controller.consumeNavigation(request)
 
     fun isCurrentTargetAvailable() = controller.isCurrentTargetAvailable()
 
@@ -63,5 +70,6 @@ class TutorialViewModel(private val c: AppContainer, private val savedState: Sav
 
     companion object {
         private const val KEY_STEP_INDEX = "tutorial_step_index"
+        private const val KEY_ACTIVE = "tutorial_active"
     }
 }

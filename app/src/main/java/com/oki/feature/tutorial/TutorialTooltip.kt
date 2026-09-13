@@ -3,7 +3,9 @@ package com.oki.feature.tutorial
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
@@ -15,6 +17,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -80,7 +83,11 @@ fun TutorialTooltip(
                     )
                 )
         val y =
-            if (targetBounds == null) (constraints.maxHeight - card.height) / 2
+            if (targetBounds == null)
+                ((constraints.maxHeight - card.height) / 2).coerceIn(
+                    top,
+                    (bottom - card.height).coerceAtLeast(top),
+                )
             else {
                 val below = targetBounds.bottom.roundToInt() + gap
                 val above = targetBounds.top.roundToInt() - gap - card.height
@@ -112,9 +119,13 @@ private fun TooltipCard(
         shape = RoundedCornerShape(22.dp),
         shadowElevation = 8.dp,
         tonalElevation = 4.dp,
-        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        modifier =
+            Modifier.testTag("tutorial-card").semantics { liveRegion = LiveRegionMode.Polite },
     ) {
-        Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             // Icon + Title
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -170,14 +181,14 @@ private fun WelcomeButtons(onSkip: () -> Unit, onStart: () -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         OutlinedButton(
             onClick = onSkip,
-            modifier = Modifier.weight(1f).height(48.dp),
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             shape = RoundedCornerShape(14.dp),
         ) {
             Text("Skip Tour")
         }
         Button(
             onClick = onStart,
-            modifier = Modifier.weight(1f).height(48.dp),
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
             shape = RoundedCornerShape(14.dp),
         ) {
             Text("Start Tour")
@@ -189,7 +200,7 @@ private fun WelcomeButtons(onSkip: () -> Unit, onStart: () -> Unit) {
 private fun FinalButtons(onFinish: () -> Unit) {
     Button(
         onClick = onFinish,
-        modifier = Modifier.fillMaxWidth().height(48.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
         shape = RoundedCornerShape(14.dp),
     ) {
         Text("Start Using App")
@@ -204,17 +215,17 @@ private fun StepButtons(
     onSkip: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = onSkip, modifier = Modifier.height(44.dp)) { Text("Skip") }
+        TextButton(onClick = onSkip, modifier = Modifier.heightIn(min = 48.dp)) { Text("Skip") }
         Spacer(Modifier.weight(1f))
         if (stepIndex > 0) {
-            IconButton(onClick = onPrevious, modifier = Modifier.size(44.dp)) {
+            IconButton(onClick = onPrevious, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Previous")
             }
         }
         Spacer(Modifier.width(4.dp))
         FilledTonalButton(
             onClick = onNext,
-            modifier = Modifier.height(44.dp),
+            modifier = Modifier.heightIn(min = 48.dp),
             shape = RoundedCornerShape(12.dp),
         ) {
             Text("Next")

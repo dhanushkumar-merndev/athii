@@ -155,6 +155,12 @@ class GroqChatClient(private val credentials: SecureCredentialStore, private val
             if (model.contains("oss")) {
                 put("reasoning_effort", reasoningEffort.name.lowercase())
                 put("include_reasoning", false)
+            } else if (model.startsWith("qwen/")) {
+                put(
+                    "reasoning_effort",
+                    if (model == GROQ_QUATERNARY) reasoningEffort.name.lowercase() else "default",
+                )
+                put("reasoning_format", "hidden")
             }
             if (tools.isNotEmpty()) {
                 put("tools", tools)

@@ -89,9 +89,12 @@ internal fun ModelUsageSheet(
                                 Text(
                                     if (retry != null && retry > now)
                                         "Rate limited · retry in ${countdown(retry - now)}"
-                                    else
-                                        "Last request rate limited · ${if (retry != null) "retry window elapsed" else "reset time not supplied"}",
-                                    color = MaterialTheme.colorScheme.error,
+                                    else if (retry != null) "Retry window reset"
+                                    else "Last request rate limited · reset time not supplied",
+                                    color =
+                                        if (retry != null && retry <= now)
+                                            MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.labelMedium,
                                 )
                             if (entry.status in listOf(401, 403))
@@ -145,7 +148,7 @@ internal fun ModelUsageSheet(
                             }
                             documentedFreeTierLimits(identity)?.let {
                                 Text(
-                                    "Docs checked ${it.checkedOn}. Account limits may differ. Remaining balances use API snapshots, not published caps.",
+                                    "Docs checked ${it.checkedOn}. Account limits may differ. Remaining balances use API snapshots. After a reported reset, availability is estimated until the next response; usage elsewhere can affect it. Used totals stay cumulative.",
                                     style = MaterialTheme.typography.labelSmall,
                                 )
                             }
@@ -244,24 +247,21 @@ private fun DocumentedLimitCard(identity: ModelIdentity) {
 }
 
 @Composable
-private fun QuotaMeter(label: String, window: QuotaWindow?, now: Long) {
+internal fun QuotaMeter(label: String, window: QuotaWindow?, now: Long) {
     if (window == null) {
         Text("$label · remaining not reported", style = MaterialTheme.typography.labelSmall)
         return
     }
-    val expired = window.resetAt?.let { it <= now } == true
-    val remaining = window.remaining.toFloat() / window.limit
+    val availability = window.availabilityAt(now)
+    val remaining = availability.remaining.toFloat() / window.limit.coerceAtLeast(1)
     val color =
-        if (expired) MaterialTheme.colorScheme.outline
-        else
-            when {
-                remaining <= .15f -> Color(0xFFE45756)
-                remaining <= .4f -> Color(0xFFCC8A16)
-                else -> Color(0xFF2C9D78)
-            }
+        when {
+            remaining <= .15f -> Color(0xFFE45756)
+            remaining <= .4f -> Color(0xFFCC8A16)
+            else -> Color(0xFF2C9D78)
+        }
     Text(
-        if (expired) "$label · window elapsed; awaiting next response"
-        else "$label · ${window.remaining} / ${window.limit} left",
+        "$label · ${if (availability.reset) "estimated " else ""}${availability.remaining} / ${window.limit} left",
         style = MaterialTheme.typography.labelSmall,
     )
     LinearProgressIndicator(
@@ -270,7 +270,12 @@ private fun QuotaMeter(label: String, window: QuotaWindow?, now: Long) {
         color = color,
         trackColor = color.copy(alpha = .14f),
     )
-    if (!expired)
+    if (availability.reset)
+        Text(
+            "Window reset · next response confirms availability",
+            style = MaterialTheme.typography.labelSmall,
+        )
+    else
         window.resetAt?.let {
             Text("Resets in ${countdown(it - now)}", style = MaterialTheme.typography.labelSmall)
         }

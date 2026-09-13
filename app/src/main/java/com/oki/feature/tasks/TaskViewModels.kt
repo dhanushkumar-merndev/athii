@@ -15,6 +15,8 @@ import kotlinx.serialization.encodeToString
 class TasksViewModel(private val c: AppContainer) : ActionViewModel() {
     val tasks = c.tasks.tasks.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val celebrationMilestone = MutableStateFlow<Int?>(null)
+    private val _showUpcoming = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val showUpcoming = _showUpcoming.asSharedFlow()
     private val celebratedMilestones = mutableSetOf<Int>()
     private var lastCelebrationDate: LocalDate = LocalDate.now()
 
@@ -59,6 +61,10 @@ class TasksViewModel(private val c: AppContainer) : ActionViewModel() {
     }
 
     fun delete(id: String) = action { c.tasks.delete(id) }
+
+    fun showUpcoming() {
+        _showUpcoming.tryEmit(Unit)
+    }
 }
 
 data class TaskAutocomplete(val titles: List<String>, val notes: List<String>)
@@ -90,6 +96,8 @@ class TaskEditorViewModel(
             .map { if (it.isBlank()) null else aiJson.decodeFromString<TaskForm>(it) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val saved = MutableStateFlow(false)
+    val savedTaskIsUpcoming = MutableStateFlow(false)
+    val isCompleted = MutableStateFlow(false)
     val autocomplete =
         c.tasks.tasks
             .map { tasks ->
@@ -108,6 +116,7 @@ class TaskEditorViewModel(
     init {
         action {
             original = id?.let { c.tasks.get(it) ?: error("This task no longer exists.") }
+            isCompleted.value = original?.isCompleted == true
             if (state.get<String>("form").isNullOrBlank()) {
                 // New tasks inherit the default lead time from Settings; saved tasks keep theirs.
                 val fallbackOffset = c.settings.settings.first().defaultOffset.toString()
@@ -132,12 +141,16 @@ class TaskEditorViewModel(
                             TaskForm(
                                 title = d.title.orEmpty(),
                                 notes = d.notes.orEmpty(),
-                                date = d.date.orEmpty(),
+                                // A task mentioned without a date means today.
+                                date =
+                                    d.date?.takeIf(String::isNotBlank)
+                                        ?: LocalDate.now().toString(),
                                 time = d.startTime?.takeIf(String::isNotBlank) ?: d.time.orEmpty(),
                                 startTime =
                                     d.startTime?.takeIf(String::isNotBlank) ?: d.time.orEmpty(),
                                 endTime = d.endTime.orEmpty(),
                                 reminder = true,
+                                alertMode = com.oki.feature.assistant.draftAlertMode(d.alertMode),
                                 offset = fallbackOffset,
                                 source =
                                     Source.valueOf(
@@ -163,6 +176,7 @@ class TaskEditorViewModel(
     }
 
     fun save(notifyNow: Boolean = false, withoutReminder: Boolean = false) = action {
+        check(!isCompleted.value) { "Reopen this task before changing it." }
         val f = form.value ?: return@action
         require(f.title.isNotBlank()) { "Enter a task title." }
         val due =
@@ -172,6 +186,17 @@ class TaskEditorViewModel(
                 error("Choose a valid date and time (YYYY-MM-DD and HH:mm).")
             }
         TimeRules.endAt(due, f.endTime)
+        val requestedOffset = parsedOffset(f)
+        val offset =
+            if (
+                f.reminder &&
+                    !withoutReminder &&
+                    !notifyNow &&
+                    due > System.currentTimeMillis() &&
+                    TimeRules.reminderAt(due, requestedOffset) <= System.currentTimeMillis()
+            )
+                0
+            else requestedOffset
         val task =
             (original ?: Task(title = f.title, dueAt = due, source = f.source)).copy(
                 title = f.title,
@@ -181,18 +206,29 @@ class TaskEditorViewModel(
                 endTime = f.endTime.ifBlank { null },
                 reminderEnabled = f.reminder && !withoutReminder,
                 alertMode = f.alertMode,
-                reminderOffsetMinutes = parsedOffset(f),
+                reminderOffsetMinutes =
+                    if (f.reminder && !withoutReminder) offset
+                    else parsedOffsetOrNull(f) ?: original?.reminderOffsetMinutes ?: 0,
             )
         c.tasks.save(task, notifyNow)
+        savedTaskIsUpcoming.value = due > System.currentTimeMillis()
         saved.value = true
     }
 
     fun reminderInPast(): Boolean =
         runCatching {
                 val f = form.value!!
+                f.reminder && TimeRules.parseDue(f.date, f.time) <= System.currentTimeMillis()
+            }
+            .getOrDefault(false)
+
+    fun reminderMovesToStartTime(): Boolean =
+        runCatching {
+                val f = form.value!!
+                val due = TimeRules.parseDue(f.date, f.time)
                 f.reminder &&
-                    TimeRules.reminderAt(TimeRules.parseDue(f.date, f.time), parsedOffset(f)) <=
-                        System.currentTimeMillis()
+                    due > System.currentTimeMillis() &&
+                    TimeRules.reminderAt(due, parsedOffset(f)) <= System.currentTimeMillis()
             }
             .getOrDefault(false)
 

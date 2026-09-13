@@ -24,6 +24,7 @@ class AppContainer(context: Context) {
                 OkiDatabase.MIGRATION_2_3,
                 OkiDatabase.MIGRATION_3_4,
                 OkiDatabase.MIGRATION_4_5,
+                OkiDatabase.MIGRATION_5_6,
             )
             .build()
     }
@@ -35,6 +36,7 @@ class AppContainer(context: Context) {
     val dailyReset by lazy { DailyDoctorResetScheduler(context) }
     val tasks by lazy { TaskRepository(database.tasks(), reminders) }
     val doctors by lazy { DoctorRepository(database) }
+    val reports by lazy { com.oki.core.export.ReportExporter(context, database, doctors) }
     val sounds by lazy { SoundStore(context) }
     val aiUsage by lazy { AiUsageStore(java.io.File(context.filesDir, "ai-usage.json")) }
     private val http by lazy { AiHttp(aiUsage) }

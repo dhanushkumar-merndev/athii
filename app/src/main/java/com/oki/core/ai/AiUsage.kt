@@ -24,6 +24,15 @@ val CHAT_MODELS
 @Serializable
 data class QuotaWindow(val limit: Long, val remaining: Long, val resetAt: Long? = null)
 
+data class QuotaAvailability(val remaining: Long, val reset: Boolean)
+
+/** A reset replenishes estimated availability; measured lifetime usage stays unchanged. */
+fun QuotaWindow.availabilityAt(now: Long): QuotaAvailability {
+    val reset = resetAt?.let { it <= now } == true
+    val cap = limit.coerceAtLeast(0)
+    return QuotaAvailability(if (reset) cap else remaining.coerceIn(0, cap), reset)
+}
+
 @Serializable
 data class ModelUsage(
     val identity: ModelIdentity,
@@ -166,6 +175,6 @@ internal fun retryDelayMs(header: String?, response: JsonObject?, now: Long): Lo
     }
     val details = (response?.get("error") as? JsonObject)?.get("details") as? JsonArray
     return details?.firstNotNullOfOrNull {
-        durationMs((it as? JsonObject)?.get("retryDelay")?.jsonPrimitive?.contentOrNull)
+        durationMs(((it as? JsonObject)?.get("retryDelay") as? JsonPrimitive)?.contentOrNull)
     } ?: 0
 }

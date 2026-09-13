@@ -720,6 +720,7 @@ fun SettingsScreen(
                     else -> vm.deleteKey(Provider.valueOf(action))
                 }
             },
+            requireAuthentication = action in setOf("all", "completed", "chat"),
         )
     }
 }

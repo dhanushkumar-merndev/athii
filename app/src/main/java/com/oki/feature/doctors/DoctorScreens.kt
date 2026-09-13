@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +27,7 @@ import com.oki.feature.tasks.SuggestionCard
 import com.oki.feature.tutorial.TutorialTargetRegistry
 import com.oki.feature.tutorial.tutorialTarget
 import java.time.DayOfWeek
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun AttendanceChip(
@@ -63,6 +65,7 @@ fun DoctorsScreen(
     vm: DoctorsViewModel,
     details: (String) -> Unit,
     tutorialTargets: TutorialTargetRegistry? = null,
+    tourTarget: String? = null,
 ) {
     val doctors by vm.doctors.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
@@ -71,23 +74,42 @@ fun DoctorsScreen(
     var department by rememberSaveable { mutableStateOf("") }
     var day by rememberSaveable { mutableStateOf("") }
     var toggling by remember { mutableStateOf<Doctor?>(null) }
+    val listState = rememberLazyListState()
+    // Show saved records during a replay even if earlier search/filter choices hid them.
+    // Those choices remain intact when the tour ends.
+    val touringDirectory = tourTarget in setOf("doctor_list_area", "doctor_card", "attendance_chip")
     val filtered =
-        remember(doctors, query, attendance, department, day) {
+        remember(doctors, query, attendance, department, day, touringDirectory) {
             doctors.orEmpty().filter {
-                (query.isBlank() ||
-                    "${it.doctorName} ${it.department} ${it.hospitalOrClinic}"
-                        .contains(query, true)) &&
-                    (attendance == "All" || it.attendanceStatus.name.equals(attendance, true)) &&
-                    (department.isBlank() || it.department == department) &&
-                    (day.isBlank() || day in it.workingDays)
+                touringDirectory ||
+                    ((query.isBlank() ||
+                        "${it.doctorName} ${it.department} ${it.hospitalOrClinic}"
+                            .contains(query, true)) &&
+                        (attendance == "All" ||
+                            it.attendanceStatus.name.equals(attendance, true)) &&
+                        (department.isBlank() || it.department == department) &&
+                        (day.isBlank() || day in it.workingDays))
             }
         }
+    LaunchedEffect(tourTarget, filtered.firstOrNull()?.id) {
+        val index =
+            when (tourTarget) {
+                "doctor_search" -> 1
+                "doctor_list_area",
+                "doctor_card",
+                "attendance_chip" -> if (filtered.isNotEmpty()) 4 else return@LaunchedEffect
+                else -> return@LaunchedEffect
+            }
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > index }
+        listState.animateScrollToItem(index)
+    }
     val searchSuggestions =
         remember(doctors) {
             doctors.orEmpty().flatMap { listOf(it.doctorName, it.department, it.hospitalOrClinic) }
         }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 22.dp),
+        state = listState,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 100.dp),
     ) {
@@ -114,11 +136,7 @@ fun DoctorsScreen(
             )
         }
         item {
-            Box(
-                if (tutorialTargets != null)
-                    Modifier.tutorialTarget("doctor_list_area", tutorialTargets)
-                else Modifier
-            ) {
+            Box {
                 DoctorFiltersRow(
                     attendance,
                     department,
@@ -156,6 +174,7 @@ fun DoctorsScreen(
                 Modifier.animateItem().fillMaxWidth().let {
                     if (isFirst && tutorialTargets != null)
                         it.tutorialTarget("doctor_card", tutorialTargets)
+                            .tutorialTarget("doctor_list_area", tutorialTargets)
                     else it
                 },
                 shape = RoundedCornerShape(20.dp),
@@ -353,12 +372,21 @@ fun DoctorDetailScreen(
     edit: () -> Unit,
     back: () -> Unit,
     tutorialTargets: TutorialTargetRegistry? = null,
+    tourTarget: String? = null,
 ) {
     val doctors by vm.doctors.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val doctor = doctors?.firstOrNull { it.id == id }
     var deleting by remember { mutableStateOf(false) }
     var toggling by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    LaunchedEffect(tourTarget, doctor?.id) {
+        if (doctor == null || tourTarget !in setOf("edit_doctor", "delete_doctor"))
+            return@LaunchedEffect
+        val count = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 1 }
+        // The two actions are the last items, and lazy items only register when visible.
+        listState.animateScrollToItem(count - if (tourTarget == "edit_doctor") 2 else 1)
+    }
     if (doctor == null) {
         if (doctors == null) CenterLoader(Modifier.fillMaxSize())
         else
@@ -371,6 +399,7 @@ fun DoctorDetailScreen(
     }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 22.dp),
+        state = listState,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 28.dp),
     ) {

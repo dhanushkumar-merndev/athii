@@ -37,10 +37,11 @@ class DeletionConfirmationTest {
                 OkiTheme(Appearance.DARK) {
                     if (open)
                         ConfirmDelete(
-                            "Delete task?",
+                            "Delete all app data?",
                             "A test fixture only.",
                             { open = false },
                             { deletes++ },
+                            requireAuthentication = true,
                         )
                 }
             }
@@ -70,6 +71,7 @@ class DeletionConfirmationTest {
                             "A test fixture only.",
                             { open = false },
                             { deletes++ },
+                            requireAuthentication = true,
                         )
                 }
             }
@@ -83,6 +85,38 @@ class DeletionConfirmationTest {
         rule.runOnIdle {
             auth.callback!!(true, null)
             assertEquals(0, deletes)
+        }
+    }
+
+    @Test
+    fun individualDeletionNeedsOnlyConfirmationAndCancelKeepsTheRecord() {
+        val auth = FakeAuthenticator()
+        var deletes = 0
+        var open by mutableStateOf(true)
+        rule.setContent {
+            CompositionLocalProvider(LocalDeletionAuthenticator provides auth) {
+                OkiTheme(Appearance.DARK) {
+                    if (open)
+                        ConfirmDelete(
+                            "Delete task?",
+                            "A test fixture only.",
+                            { open = false },
+                            { deletes++ },
+                        )
+                }
+            }
+        }
+        rule.onNodeWithText("Phone verification required.").assertDoesNotExist()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.runOnIdle {
+            assertEquals(0, deletes)
+            assertEquals(0, auth.requests)
+            open = true
+        }
+        rule.onNodeWithText("Delete", substring = false).performClick()
+        rule.runOnIdle {
+            assertEquals(1, deletes)
+            assertEquals(0, auth.requests)
         }
     }
 }

@@ -78,7 +78,8 @@ class AiExperienceTest {
             }
             rule.onNodeWithText("Gemini · $GEMINI_FALLBACK").assertExists()
             rule.onNodeWithText("Review all 2 items · 0 saved").performClick()
-            rule.onNodeWithText("Title").performTextReplacement("Edited fixture task")
+            // Batch cards use the same fields as the single task editor.
+            rule.onNodeWithText("Task title *").performTextReplacement("Edited fixture task")
             rule.runOnIdle { keyboard?.hide() }
             rule.onNodeWithTag("batch-review-list").performScrollToNode(hasText("Save task"))
             rule.onNodeWithText("Save task").performScrollTo().assertIsDisplayed()
@@ -171,8 +172,8 @@ class AiExperienceTest {
             rule
                 .onAllNodes(hasScrollToIndexAction())
                 .onLast()
-                .performScrollToNode(hasText("5. Gemini · $GEMINI_FALLBACK"))
-            rule.onNodeWithText("5. Gemini · $GEMINI_FALLBACK").assertExists()
+                .performScrollToNode(hasText("${CHAT_MODELS.size}. Gemini · $GEMINI_FALLBACK"))
+            rule.onNodeWithText("${CHAT_MODELS.size}. Gemini · $GEMINI_FALLBACK").assertExists()
             rule
                 .onAllNodesWithText("Remaining quota unavailable · check Usage")
                 .onLast()

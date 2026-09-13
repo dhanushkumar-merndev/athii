@@ -15,14 +15,25 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -148,7 +159,13 @@ fun ErrorBanner(message: String?) {
 }
 
 @Composable
-fun ConfirmDelete(title: String, text: String, dismiss: () -> Unit, confirm: () -> Unit) {
+fun ConfirmDelete(
+    title: String,
+    text: String,
+    dismiss: () -> Unit,
+    confirm: () -> Unit,
+    requireAuthentication: Boolean = false,
+) {
     val authenticator = rememberDeletionAuthenticator()
     val approval = remember(title, text) { DeletionApproval() }
     var verifying by remember(title, text) { mutableStateOf(false) }
@@ -171,7 +188,8 @@ fun ConfirmDelete(title: String, text: String, dismiss: () -> Unit, confirm: () 
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text)
-                Text("Phone verification required.", style = MaterialTheme.typography.bodySmall)
+                if (requireAuthentication)
+                    Text("Phone verification required.", style = MaterialTheme.typography.bodySmall)
                 verificationError?.let {
                     Text(
                         it,
@@ -193,27 +211,132 @@ fun ConfirmDelete(title: String, text: String, dismiss: () -> Unit, confirm: () 
                     if (request != null) {
                         verifying = true
                         verificationError = null
-                        authenticator.authenticate(title) { success, error ->
-                            if (approval.isPending(request)) {
-                                verifying = false
-                                if (success) approval.approve(request)
-                                else {
-                                    approval.cancel()
-                                    verificationError =
-                                        error ?: "Verification canceled. Nothing was deleted."
+                        if (!requireAuthentication) {
+                            approval.approve(request)
+                        } else
+                            authenticator.authenticate(title) { success, error ->
+                                if (approval.isPending(request)) {
+                                    verifying = false
+                                    if (success) approval.approve(request)
+                                    else {
+                                        approval.cancel()
+                                        verificationError =
+                                            error ?: "Verification canceled. Nothing was deleted."
+                                    }
                                 }
                             }
-                        }
                     }
                 },
             ) {
                 Text(
-                    if (verifying) "Verifying…" else "Verify & delete",
+                    if (verifying) "Verifying…"
+                    else if (requireAuthentication) "Verify & delete" else "Delete",
                     color = MaterialTheme.colorScheme.error,
                 )
             }
         },
         dismissButton = { TextButton(onClick = ::cancel) { Text("Cancel") } },
+    )
+}
+
+/**
+ * First suggestion that extends what the user typed (leading spaces ignored), matched ignoring
+ * case. Only prefix matches qualify because the completion is drawn inline after the typed text; an
+ * exact match of the typed text is never offered.
+ */
+internal fun inlineCompletion(text: String, suggestions: List<String>): String? {
+    val typed = text.trimStart()
+    if (typed.isBlank()) return null
+    return suggestions.firstOrNull {
+        it.length > typed.length && it.startsWith(typed, ignoreCase = true)
+    }
+}
+
+/** Draws [ghost] after the typed text; the cursor can never land inside the ghost. */
+private data class GhostTextTransformation(val ghost: String, val color: Color) :
+    VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val typedLength = text.length
+        val shown = buildAnnotatedString {
+            append(text)
+            withStyle(SpanStyle(color = color)) { append(ghost) }
+        }
+        val mapping =
+            object : OffsetMapping {
+                override fun originalToTransformed(offset: Int): Int =
+                    offset.coerceIn(0, typedLength)
+
+                override fun transformedToOriginal(offset: Int): Int =
+                    offset.coerceIn(0, typedLength)
+            }
+        return TransformedText(shown, mapping)
+    }
+}
+
+/**
+ * String-in/String-out text field with an inline ghost-text completion and an accept arrow. Keeps a
+ * [TextFieldValue] internally so accepting a suggestion can move the cursor to the end.
+ */
+@Composable
+private fun InlineCompletionTextField(
+    value: String,
+    change: (String) -> Unit,
+    suggestions: List<String>,
+    modifier: Modifier,
+    shape: Shape,
+    singleLine: Boolean,
+    minLines: Int,
+    label: @Composable (() -> Unit)? = null,
+    placeholder: @Composable (() -> Unit)? = null,
+    leadingIcon: @Composable (() -> Unit)? = null,
+) {
+    var fieldState by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    // The caller's String is the source of truth; copy() coerces selection/composition into range.
+    val fieldValue = if (fieldState.text == value) fieldState else fieldState.copy(text = value)
+    var lastText by remember(value) { mutableStateOf(value) }
+    var focused by remember { mutableStateOf(false) }
+
+    val match = remember(value, suggestions) { inlineCompletion(value, suggestions) }
+    val cursorAtEnd = fieldValue.selection.collapsed && fieldValue.selection.end == value.length
+    val completion = match?.takeIf { focused && cursorAtEnd }
+    val ghostColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+    val transformation =
+        remember(completion, value, ghostColor) {
+            if (completion == null) VisualTransformation.None
+            else GhostTextTransformation(completion.substring(value.trimStart().length), ghostColor)
+        }
+
+    OutlinedTextField(
+        value = fieldValue,
+        onValueChange = {
+            fieldState = it
+            if (it.text != lastText) {
+                lastText = it.text
+                change(it.text)
+            }
+        },
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
+        label = label,
+        placeholder = placeholder,
+        leadingIcon = leadingIcon,
+        trailingIcon =
+            completion?.let { accepted ->
+                {
+                    IconButton(
+                        onClick = {
+                            fieldState = TextFieldValue(accepted, TextRange(accepted.length))
+                            lastText = accepted
+                            change(accepted)
+                        }
+                    ) {
+                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
+                    }
+                }
+            },
+        visualTransformation = transformation,
+        singleLine = singleLine,
+        minLines = minLines,
+        shape = shape,
     )
 }
 
@@ -226,64 +349,19 @@ fun Field(
     multiline: Boolean = false,
     suggestions: List<String> = emptyList(),
 ) {
-    val query = value.trimStart()
-    val match =
-        remember(query, suggestions) {
-            if (query.length < 2) null
-            else
-                suggestions.firstOrNull {
-                    it.startsWith(query, ignoreCase = true) && !it.equals(query, ignoreCase = true)
-                }
-        }
-
-    val visualTransformation =
-        remember(match) {
-            if (match != null) {
-                androidx.compose.ui.text.input.VisualTransformation { text ->
-                    val typedLength = text.length
-                    val ghostText = match.substring(typedLength)
-                    val builder = androidx.compose.ui.text.AnnotatedString.Builder(text.text)
-                    builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.Gray))
-                    builder.append(ghostText)
-                    builder.pop()
-                    val annotatedString = builder.toAnnotatedString()
-
-                    androidx.compose.ui.text.input.TransformedText(
-                        text = annotatedString,
-                        offsetMapping =
-                            object : androidx.compose.ui.text.input.OffsetMapping {
-                                override fun originalToTransformed(offset: Int): Int = offset
-
-                                override fun transformedToOriginal(offset: Int): Int =
-                                    if (offset > typedLength) typedLength else offset
-                            },
-                    )
-                }
-            } else {
-                androidx.compose.ui.text.input.VisualTransformation.None
-            }
-        }
-
-    OutlinedTextField(
+    InlineCompletionTextField(
         value = value,
-        onValueChange = change,
-        label = { Text(label) },
+        change = change,
+        suggestions = suggestions,
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
         singleLine = !multiline,
         minLines = if (multiline) 3 else 1,
-        visualTransformation = visualTransformation,
-        trailingIcon =
-            if (match != null) {
-                {
-                    IconButton(onClick = { change(match) }) {
-                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
-                    }
-                }
-            } else null,
+        label = { Text(label) },
     )
 }
 
+/** Applies [modifier] to the text field as-is (no forced width), so `Modifier.weight` works. */
 @Composable
 fun InlineAutocompleteField(
     value: String,
@@ -293,61 +371,16 @@ fun InlineAutocompleteField(
     leadingIcon: @Composable (() -> Unit)? = null,
     suggestions: List<String> = emptyList(),
 ) {
-    val query = value.trimStart()
-    val match =
-        remember(query, suggestions) {
-            if (query.length < 2) null
-            else
-                suggestions.firstOrNull {
-                    it.startsWith(query, ignoreCase = true) && !it.equals(query, ignoreCase = true)
-                }
-        }
-
-    val visualTransformation =
-        remember(match) {
-            if (match != null) {
-                androidx.compose.ui.text.input.VisualTransformation { text ->
-                    val typedLength = text.length
-                    val ghostText = match.substring(typedLength)
-                    val builder = androidx.compose.ui.text.AnnotatedString.Builder(text.text)
-                    builder.pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.Gray))
-                    builder.append(ghostText)
-                    builder.pop()
-                    val annotatedString = builder.toAnnotatedString()
-
-                    androidx.compose.ui.text.input.TransformedText(
-                        text = annotatedString,
-                        offsetMapping =
-                            object : androidx.compose.ui.text.input.OffsetMapping {
-                                override fun originalToTransformed(offset: Int): Int = offset
-
-                                override fun transformedToOriginal(offset: Int): Int =
-                                    if (offset > typedLength) typedLength else offset
-                            },
-                    )
-                }
-            } else {
-                androidx.compose.ui.text.input.VisualTransformation.None
-            }
-        }
-
-    OutlinedTextField(
+    InlineCompletionTextField(
         value = value,
-        onValueChange = change,
+        change = change,
+        suggestions = suggestions,
         modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        singleLine = true,
+        minLines = 1,
         placeholder = placeholder,
         leadingIcon = leadingIcon,
-        singleLine = true,
-        shape = RoundedCornerShape(18.dp),
-        visualTransformation = visualTransformation,
-        trailingIcon =
-            if (match != null) {
-                {
-                    IconButton(onClick = { change(match) }) {
-                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Accept suggestion")
-                    }
-                }
-            } else null,
     )
 }
 

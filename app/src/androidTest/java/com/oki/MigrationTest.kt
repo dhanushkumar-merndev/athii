@@ -23,11 +23,12 @@ class MigrationTest {
         helper
             .runMigrationsAndValidate(
                 "migration-fixture",
-                5,
+                6,
                 true,
                 OkiDatabase.MIGRATION_2_3,
                 OkiDatabase.MIGRATION_3_4,
                 OkiDatabase.MIGRATION_4_5,
+                OkiDatabase.MIGRATION_5_6,
             )
             .use { database ->
                 database
@@ -42,6 +43,32 @@ class MigrationTest {
                         assertTrue(row.isNull(3))
                         assertEquals("NOTIFICATION", row.getString(4))
                     }
+            }
+    }
+
+    @Test
+    fun upgradeToSixAddsAttendanceLogAndKeepsDoctors() {
+        helper.createDatabase("migration-attendance", 5).apply {
+            execSQL(
+                "INSERT INTO doctors (id, doctorName, qualification, department, roomOrOpdNumber, availableFrom, availableUntil, workingDays, hospitalOrClinic, phone, notes, attendanceStatus, attendanceChangedAt, source, createdAt, updatedAt) VALUES ('doc', 'Dr Keep', '', 'ENT', '', '', '', 'MONDAY', '', '', '', 'ABSENT', 1, 'MANUAL', 1, 1)"
+            )
+            close()
+        }
+        helper
+            .runMigrationsAndValidate("migration-attendance", 6, true, OkiDatabase.MIGRATION_5_6)
+            .use { database ->
+                database.query("SELECT doctorName, attendanceStatus FROM doctors").use { row ->
+                    assertTrue(row.moveToFirst())
+                    assertEquals("Dr Keep", row.getString(0))
+                    assertEquals("ABSENT", row.getString(1))
+                }
+                database.execSQL(
+                    "INSERT INTO attendance_log (date, doctorId, doctorName, department, workingDays, status, recordedAt) SELECT '2026-09-13', id, doctorName, department, workingDays, attendanceStatus, 5 FROM doctors"
+                )
+                database.query("SELECT status FROM attendance_log WHERE date = '2026-09-13'").use {
+                    assertTrue(it.moveToFirst())
+                    assertEquals("ABSENT", it.getString(0))
+                }
             }
     }
 }

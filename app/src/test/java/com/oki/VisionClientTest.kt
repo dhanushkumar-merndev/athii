@@ -63,7 +63,7 @@ class VisionClientTest {
                 .extract(byteArrayOf(1), false)
         assertEquals(2, drafts.size)
         assertEquals(listOf(GEMINI_PRIMARY, GEMINI_FALLBACK), gemini.calls)
-        assertEquals(1, groq.calls.size)
+        assertEquals(GROQ_VISION_MODELS, groq.calls)
     }
 
     @Test
@@ -137,7 +137,7 @@ class VisionClientTest {
     }
 
     @Test
-    fun allFailuresReturnOneCleanErrorAfterThreeAttempts() = runTest {
+    fun allFailuresReturnOneCleanErrorAfterFourAttempts() = runTest {
         val groq = GroqFake(ApiFailure(503))
         val gemini = GeminiFake(ApiFailure(503), ApiFailure(503))
         val error =
@@ -147,7 +147,7 @@ class VisionClientTest {
                 }
                 .exceptionOrNull()!!
         assertEquals("AI service temporarily unavailable. Please try again.", friendlyError(error))
-        assertEquals(3, groq.calls.size + gemini.calls.size)
+        assertEquals(4, groq.calls.size + gemini.calls.size)
     }
 
     @Test

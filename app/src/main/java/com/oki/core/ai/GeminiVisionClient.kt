@@ -21,6 +21,8 @@ data class TaskDraft(
     val startTime: String? = null,
     val endTime: String? = null,
     val reminderOffsetMinutes: Int? = null,
+    /** NOTIFICATION or ALARM; null keeps the notification default for scans and older chats. */
+    val alertMode: String? = null,
     val confidence: Map<String, Double> = emptyMap(),
 )
 
@@ -168,7 +170,8 @@ fun interface GeminiTransport {
     suspend fun generate(model: String, parts: JsonArray, schema: JsonObject): String
 }
 
-const val GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
+const val GROQ_VISION_MODEL = GROQ_QUATERNARY
+val GROQ_VISION_MODELS = listOf(GROQ_VISION_MODEL, GROQ_TERTIARY)
 
 fun interface GroqVisionTransport {
     suspend fun generate(model: String, prompt: String, image: String, schema: JsonObject): String
@@ -212,7 +215,7 @@ class GeminiVisionClient(
             val schema = ExtractionSchemas.response(doctor)
             val attempts = buildList {
                 if (groqTransport != null || credentials?.isConfigured(Provider.GROQ) == true) {
-                    add(Provider.GROQ to GROQ_VISION_MODEL)
+                    addAll(GROQ_VISION_MODELS.map { Provider.GROQ to it })
                 }
                 if (transport != null || credentials?.isConfigured(Provider.GEMINI) == true) {
                     addAll(GEMINI_VISION_MODELS.map { Provider.GEMINI to it })
@@ -221,7 +224,7 @@ class GeminiVisionClient(
             check(attempts.isNotEmpty()) {
                 "Add a Groq or Gemini API key in Settings to scan images."
             }
-            withTimeoutOrNull(75_000) attempts@{
+            withTimeoutOrNull(100_000) attempts@{
                 var lastException: Exception? = null
                 val blockedProviders = mutableSetOf<Provider>()
                 for ((provider, model) in attempts) {
@@ -252,8 +255,9 @@ class GeminiVisionClient(
                                 when {
                                     e.status == 401 || e.status == 403 ->
                                         blockedProviders += provider
-                                    e.status == 429 && e.retryAfterMs > 2000 ->
-                                        blockedProviders += provider
+                                    e.status == 429 &&
+                                        e.retryAfterMs > 2000 &&
+                                        provider == Provider.GEMINI -> blockedProviders += provider
                                     e.status == 429 || e.status == 404 || e.status in 500..599 -> {
                                         if (e.retryAfterMs in 1..2000) pause(e.retryAfterMs)
                                     }
@@ -330,6 +334,8 @@ class GeminiVisionClient(
                         // Small scans fit the free output quota; large/truncated responses use
                         // Gemini.
                         put("max_completion_tokens", 1000)
+                        put("reasoning_effort", "none")
+                        put("reasoning_format", "hidden")
                         put("temperature", 0.1)
                     },
                 )

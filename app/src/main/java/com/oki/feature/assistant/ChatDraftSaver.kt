@@ -3,6 +3,11 @@ package com.oki.feature.assistant
 import com.oki.core.storage.*
 import com.oki.feature.doctors.DoctorRepository
 import com.oki.feature.tasks.TaskRepository
+import java.time.LocalDate
+
+internal fun draftAlertMode(value: String?): TaskAlertMode =
+    if (value.equals("ALARM", ignoreCase = true)) TaskAlertMode.ALARM
+    else TaskAlertMode.NOTIFICATION
 
 /** Called exclusively by an explicit per-item Save action. Stable draft IDs make retries safe. */
 class ChatDraftSaver(private val tasks: TaskRepository, private val doctors: DoctorRepository) {
@@ -17,9 +22,11 @@ internal fun reviewTask(draft: ChatDraft): Task {
     val task = requireNotNull(draft.task)
     require(!task.title.isNullOrBlank()) { "Enter a task title." }
     val time = task.startTime?.takeIf { it.isNotBlank() } ?: task.time.orEmpty()
+    // A task mentioned without a date means today.
+    val date = task.date?.takeIf { it.isNotBlank() } ?: LocalDate.now().toString()
     val due =
         try {
-            TimeRules.parseDue(task.date.orEmpty(), time)
+            TimeRules.parseDue(date, time)
         } catch (_: Exception) {
             throw IllegalArgumentException(
                 "Choose a valid date (YYYY-MM-DD) and start time (HH:mm)."
@@ -35,6 +42,7 @@ internal fun reviewTask(draft: ChatDraft): Task {
         endTime = task.endTime?.takeIf { it.isNotBlank() },
         source = Source.AI_CHAT,
         reminderEnabled = draft.reminderEnabled,
+        alertMode = draftAlertMode(task.alertMode),
         reminderOffsetMinutes = task.reminderOffsetMinutes ?: 0,
     )
 }

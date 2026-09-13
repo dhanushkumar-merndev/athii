@@ -14,6 +14,7 @@ import com.oki.feature.tasks.TaskNotificationKind
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -25,8 +26,71 @@ class NotificationTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
     private fun shell(command: String) {
-        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command).use {
-            android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes()
+        InstrumentationRegistry.getInstrumentation()
+            .uiAutomation
+            .executeShellCommand(command.replace("com.oki", context.packageName))
+            .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
+    }
+
+    @Test
+    fun scheduledRemindersUseTheSameSoundPolicyAsSettingsTest(): Unit = runBlocking {
+        shell("pm grant com.oki android.permission.POST_NOTIFICATIONS")
+        shell("appops set com.oki SCHEDULE_EXACT_ALARM allow")
+        val c = (context.applicationContext as OkiApplication).container
+        val previous = c.settings.settings.first()
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val createdIds = mutableListOf<String>()
+        val previewIds = mutableListOf<String>()
+        try {
+            listOf(SoundMode.SYSTEM to false, SoundMode.SYSTEM to true, SoundMode.SILENT to true)
+                .forEach { (mode, bypass) ->
+                    val taskId = "scheduled-sound-policy-$mode-$bypass".also(createdIds::add)
+                    val previewId = "preview-sound-policy-$mode-$bypass".also(previewIds::add)
+                    c.settings.setSound(mode)
+                    c.settings.setBypassDnd(bypass)
+                    val settings = c.settings.settings.first()
+                    val task =
+                        Task(
+                            id = taskId,
+                            title = "Scheduled sound check",
+                            dueAt = System.currentTimeMillis() + 2500,
+                        )
+                    c.publisher.publish(task.copy(id = previewId), settings)
+                    c.tasks.save(task)
+                    val deadline = System.currentTimeMillis() + 12000
+                    while (
+                        manager.activeNotifications.none {
+                            it.tag == ChannelIdentity.notificationTag(taskId)
+                        } && System.currentTimeMillis() < deadline
+                    ) kotlinx.coroutines.delay(50)
+                    val delivered =
+                        manager.activeNotifications.single {
+                            it.tag == ChannelIdentity.notificationTag(taskId)
+                        }
+                    val preview =
+                        manager.activeNotifications.single {
+                            it.tag == ChannelIdentity.notificationTag(previewId)
+                        }
+                    assertEquals(preview.notification.channelId, delivered.notification.channelId)
+                    val channel = manager.getNotificationChannel(delivered.notification.channelId)
+                    assertEquals(
+                        if (bypass && mode != SoundMode.SILENT)
+                            android.media.AudioAttributes.USAGE_ALARM
+                        else android.media.AudioAttributes.USAGE_NOTIFICATION,
+                        channel.audioAttributes.usage,
+                    )
+                    if (mode == SoundMode.SILENT) {
+                        assertNull(channel.sound)
+                        assertFalse(channel.shouldVibrate())
+                    } else assertNotNull(channel.sound)
+                    c.tasks.delete(taskId)
+                    c.publisher.dismiss(previewId)
+                }
+        } finally {
+            createdIds.forEach { c.tasks.delete(it) }
+            previewIds.forEach(c.publisher::dismiss)
+            c.settings.setSound(previous.soundMode, previous.customSoundUri)
+            c.settings.setBypassDnd(previous.bypassDnd)
         }
     }
 
@@ -41,13 +105,10 @@ class NotificationTest {
         val manager = context.getSystemService(NotificationManager::class.java)
         val c = (context.applicationContext as OkiApplication).container
         c.database.tasks().put(task)
+        val settings = Settings(soundMode = SoundMode.SILENT, alarmSound = AlarmSound.ALARM)
         try {
-            publisher.publish(task, Settings(soundMode = SoundMode.SILENT))
-            publisher.publish(
-                task,
-                Settings(soundMode = SoundMode.SILENT),
-                TaskNotificationKind.END,
-            )
+            publisher.publish(task, settings)
+            publisher.publish(task, settings, TaskNotificationKind.END)
             val deadline = System.currentTimeMillis() + 5000
             while (
                 manager.activeNotifications.count { it.tag.startsWith("task:${task.id}") } < 2 &&
@@ -59,7 +120,10 @@ class NotificationTest {
                     .notification
             assertTrue(start.flags and android.app.Notification.FLAG_INSISTENT != 0)
             assertEquals(300000L, start.timeoutAfter)
-            assertEquals(listOf("Stop", "Snooze 5 min"), start.actions.map { it.title.toString() })
+            assertEquals(
+                listOf("Mark done", "Snooze 5 min", "Stop"),
+                start.actions.map { it.title.toString() },
+            )
             val channel = manager.getNotificationChannel(start.channelId)
             assertEquals(android.media.AudioAttributes.USAGE_ALARM, channel.audioAttributes.usage)
             assertEquals(android.provider.Settings.System.DEFAULT_ALARM_ALERT_URI, channel.sound)
@@ -73,7 +137,7 @@ class NotificationTest {
             assertEquals(0, end.flags and android.app.Notification.FLAG_INSISTENT)
             assertNull(end.fullScreenIntent)
             assertNull(manager.getNotificationChannel(end.channelId).sound)
-            start.actions[0].actionIntent.send()
+            start.actions.single { it.title.toString() == "Stop" }.actionIntent.send()
             val stopDeadline = System.currentTimeMillis() + 3000
             while (
                 publisher.isAlarmActive(task.id) && System.currentTimeMillis() < stopDeadline
@@ -131,6 +195,40 @@ class NotificationTest {
         } finally {
             c.tasks.delete(task.id)
         }
+    }
+
+    @Test
+    fun notificationRemindersScheduleThroughAlarmClockSoOemsCannotBatchThem(): Unit = runBlocking {
+        // Regression: ColorOS batched setExactAndAllowWhileIdle by up to +2m20s. Notification
+        // mode reminders must use setAlarmClock, which the system reports as nextAlarmClock.
+        shell("pm grant com.oki android.permission.POST_NOTIFICATIONS")
+        shell("appops set com.oki SCHEDULE_EXACT_ALARM allow")
+        val c = (context.applicationContext as OkiApplication).container
+        val manager = context.getSystemService(android.app.AlarmManager::class.java)
+        val previous = manager.nextAlarmClock?.triggerTime
+        val now = System.currentTimeMillis()
+        // nextAlarmClock is the soonest across all apps, so stay ahead of any existing one.
+        val due =
+            (now + 180_000).let { preferred ->
+                if (previous != null && previous <= preferred) (now + previous) / 2 else preferred
+            }
+        assertTrue("Another alarm clock is due too soon to test against", due > now + 10_000)
+        val task = Task(id = "notification-alarm-clock", title = "On-time reminder", dueAt = due)
+        assertEquals(TaskAlertMode.NOTIFICATION, task.alertMode)
+        try {
+            c.tasks.save(task)
+            val next = manager.nextAlarmClock
+            assertNotNull(next)
+            assertEquals(due, next.triggerTime)
+            assertEquals(context.packageName, next.showIntent.creatorPackage)
+        } finally {
+            c.tasks.delete(task.id)
+        }
+        val deadline = System.currentTimeMillis() + 3000
+        while (
+            manager.nextAlarmClock?.triggerTime != previous && System.currentTimeMillis() < deadline
+        ) kotlinx.coroutines.delay(50)
+        assertEquals(previous, manager.nextAlarmClock?.triggerTime)
     }
 
     @Test
@@ -202,7 +300,7 @@ class NotificationTest {
                 .put("data".toByteArray())
                 .putInt(samples * 2)
             val file = File(folder, "test-$seconds.wav").apply { writeBytes(b.array()) }
-            return FileProvider.getUriForFile(context, "com.oki.files", file)
+            return FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         }
         val sound = SoundStore(context)
         val uri = sound.import(wav(5))
@@ -294,6 +392,11 @@ class NotificationTest {
             assertNull(c.tasks.get(task.id)!!.scheduledReminderAt)
             assertNull(c.tasks.get(task.id)!!.scheduledEndReminderAt)
             c.tasks.complete(task.id, true)
+            val dismissDeadline = System.currentTimeMillis() + 3000
+            while (
+                manager.activeNotifications.any { it.tag.startsWith("task:${task.id}") } &&
+                    System.currentTimeMillis() < dismissDeadline
+            ) kotlinx.coroutines.delay(50)
             assertTrue(manager.activeNotifications.none { it.tag.startsWith("task:${task.id}") })
         } finally {
             c.tasks.delete(task.id)

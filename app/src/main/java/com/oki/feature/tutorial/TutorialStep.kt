@@ -30,6 +30,8 @@ data class TutorialStep(
     val isFinal: Boolean = false,
     /** Points at a doctor record, so it is skipped outright when the directory is empty. */
     val needsDoctor: Boolean = false,
+    /** Points at saved tasks, so it is skipped when the task list is empty. */
+    val needsTask: Boolean = false,
 )
 
 /** All guided-tour steps in order. */
@@ -52,6 +54,55 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "home/tasks",
             targetKey = "task_dashboard",
             icon = Icons.Outlined.Dashboard,
+            needsTask = true,
+        ),
+        TutorialStep(
+            id = "task_list",
+            title = "Your Tasks",
+            description =
+                "Each task shows its start time and reminder. Tap a task to view or update it.",
+            screenRoute = "home/tasks",
+            targetKey = "task_card",
+            icon = Icons.Outlined.TaskAlt,
+            needsTask = true,
+        ),
+        TutorialStep(
+            id = "task_complete",
+            title = "Mark as Done",
+            description =
+                "Tap the circle when a task is finished. Completed tasks are read-only; reopen one to change it.",
+            screenRoute = "home/tasks",
+            targetKey = "task_checkbox",
+            icon = Icons.Outlined.CheckCircleOutline,
+            needsTask = true,
+        ),
+        TutorialStep(
+            id = "task_filters",
+            title = "Upcoming, Overdue, Completed",
+            description = "Switch lists to see what is next, what was missed and what is done.",
+            screenRoute = "home/tasks",
+            targetKey = "task_filters",
+            icon = Icons.Outlined.FilterList,
+            needsTask = true,
+        ),
+        TutorialStep(
+            id = "task_search",
+            title = "Find Tasks Faster",
+            description = "Search tasks by title or notes. Suggestions complete as you type.",
+            screenRoute = "home/tasks",
+            targetKey = "task_search",
+            icon = Icons.Outlined.Search,
+            needsTask = true,
+        ),
+        TutorialStep(
+            id = "task_delete",
+            title = "Delete Task",
+            description =
+                "Remove a task and its reminder. Confirmation is always shown before deletion.",
+            screenRoute = "home/tasks",
+            targetKey = "task_delete",
+            icon = Icons.Outlined.DeleteOutline,
+            needsTask = true,
         ),
         TutorialStep(
             id = "add_doctor",
@@ -69,6 +120,7 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "home/doctors",
             targetKey = "doctor_list_area",
             icon = Icons.Outlined.MedicalServices,
+            needsDoctor = true,
         ),
         TutorialStep(
             id = "doctor_card",
@@ -116,6 +168,7 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "home/doctors",
             targetKey = "doctor_search",
             icon = Icons.Outlined.Search,
+            needsDoctor = true,
         ),
         TutorialStep(
             id = "reminder",
@@ -133,6 +186,15 @@ val ALL_TUTORIAL_STEPS: List<TutorialStep> =
             screenRoute = "settings",
             targetKey = "notification_settings",
             icon = Icons.Outlined.NotificationsActive,
+        ),
+        TutorialStep(
+            id = "export_report",
+            title = "Download Reports",
+            description =
+                "Pick a date range to download an Excel report with charts: task progress on Tasks, attendance on Doctors.",
+            screenRoute = "home/tasks",
+            targetKey = "export_report",
+            icon = Icons.Outlined.FileDownload,
         ),
         TutorialStep(
             id = "settings",

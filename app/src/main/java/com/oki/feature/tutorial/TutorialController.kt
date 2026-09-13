@@ -1,191 +1,154 @@
 package com.oki.feature.tutorial
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-/**
- * Describes which screen the tour needs the host to navigate to before the next spotlight can
- * appear. The host ([OkiApp]) translates these into actual NavController / pager actions.
- */
-data class NavigationRequest(
-    /** Logical route: "home/tasks", "home/doctors", "settings", "doctor_detail". */
-    val route: String
-)
+/** A step-specific request; consecutive steps on the same screen still get acknowledged. */
+data class NavigationRequest(val route: String, val stepId: String)
 
-/**
- * Central state-machine that drives the guided app tour.
- *
- * Navigation is **not** performed here — the controller emits [NavigationRequest] objects via
- * [pendingNavigation] and the host composable executes them, keeping the controller
- * navigation-framework-agnostic.
- */
+/** Navigation-independent state machine for the guided tour. */
 class TutorialController(
-    private val prefs: TutorialPreferences,
+    private val prefs: TutorialCompletionStore,
     private val registry: TutorialTargetRegistry,
     private val scope: CoroutineScope,
 ) {
     private val steps = ALL_TUTORIAL_STEPS
-
-    /**
-     * Set by the host. Steps it rejects, such as doctor-record steps with no doctors saved, are
-     * passed over without being shown, instead of flashing up and timing out one after another.
-     */
-    var isStepAvailable: (TutorialStep) -> Boolean = { true }
+    private var hasTasks = false
+    private var hasDoctors = false
     private var movingForward = true
+    private var startJob: Job? = null
+    private val unavailableTargets = mutableSetOf<String>()
 
     private val _isTourActive = MutableStateFlow(false)
     val isTourActive: StateFlow<Boolean> = _isTourActive.asStateFlow()
-
     private val _currentStepIndex = MutableStateFlow(0)
     val currentStepIndex: StateFlow<Int> = _currentStepIndex.asStateFlow()
-
-    val totalSteps: Int
-        get() = steps.size
-
-    val currentStep: StateFlow<TutorialStep?> =
-        combine(_currentStepIndex, _isTourActive) { idx, active ->
-                if (active) steps.getOrNull(idx) else null
-            }
-            .stateIn(scope, SharingStarted.Eagerly, null)
-
+    private val _currentStep = MutableStateFlow<TutorialStep?>(null)
+    val currentStep: StateFlow<TutorialStep?> = _currentStep.asStateFlow()
+    private val _visibleStepIndex = MutableStateFlow(0)
+    val visibleStepIndex: StateFlow<Int> = _visibleStepIndex.asStateFlow()
+    private val _totalSteps = MutableStateFlow(availableIndices().size)
+    val totalSteps: StateFlow<Int> = _totalSteps.asStateFlow()
     private val _pendingNavigation = MutableStateFlow<NavigationRequest?>(null)
     val pendingNavigation: StateFlow<NavigationRequest?> = _pendingNavigation.asStateFlow()
-
-    /** True while the overlay should show the skip-confirmation dialog. */
     private val _showSkipConfirm = MutableStateFlow(false)
     val showSkipConfirm: StateFlow<Boolean> = _showSkipConfirm.asStateFlow()
 
-    // ---- lifecycle ----
+    /** Refresh when persisted data changes, including deletion while a tour is active. */
+    fun updateDataAvailability(hasTasks: Boolean, hasDoctors: Boolean) {
+        this.hasTasks = hasTasks
+        this.hasDoctors = hasDoctors
+        refreshProgress()
+        if (_isTourActive.value && !isAvailable(steps[_currentStepIndex.value])) {
+            skipUnavailableTarget()
+        }
+    }
 
-    /** Automatically start the tour on first launch if not yet completed. */
     fun startTourIfNeeded() {
-        scope.launch {
-            prefs.hasCompletedAppTour.first().let { completed -> if (!completed) startTour() }
-        }
+        if (_isTourActive.value || startJob?.isActive == true) return
+        startJob =
+            scope.launch {
+                if (!prefs.hasCompletedAppTour.first() && !_isTourActive.value) startTour()
+            }
     }
 
-    /** Begin the tour from step 0. */
     fun startTour() {
+        unavailableTargets.clear()
         movingForward = true
-        _currentStepIndex.value = 0
-        _isTourActive.value = true
         _showSkipConfirm.value = false
-        emitNavigationForStep(0)
+        _isTourActive.value = true
+        moveTo(0)
     }
 
-    /** Replay from Settings — works even when already completed. */
-    fun replayTour() {
-        movingForward = true
-        _currentStepIndex.value = 0
-        _isTourActive.value = true
-        _showSkipConfirm.value = false
-        emitNavigationForStep(0)
-    }
+    fun replayTour() = startTour()
 
-    /** Restore the index after process death (called from ViewModel). */
+    /** Restore an active tour before first-launch detection runs. */
     fun restoreIndex(index: Int) {
-        if (_isTourActive.value && index in steps.indices) {
-            _currentStepIndex.value = index
-        }
+        if (index !in steps.indices) return
+        _isTourActive.value = true
+        moveTo(index)
     }
-
-    // ---- navigation within tour ----
 
     fun next() {
+        if (!_isTourActive.value || _showSkipConfirm.value) return
         movingForward = true
-        val nextIndex = findNextValidIndex(_currentStepIndex.value + 1, forward = true)
-        if (nextIndex != null) {
-            _currentStepIndex.value = nextIndex
-            emitNavigationForStep(nextIndex)
-        } else {
-            finish()
-        }
+        val index = findNextValidIndex(_currentStepIndex.value + 1, true)
+        if (index == null) finish() else moveTo(index)
     }
 
     fun previous() {
+        if (!_isTourActive.value || _showSkipConfirm.value) return
         movingForward = false
-        val prevIndex = findNextValidIndex(_currentStepIndex.value - 1, forward = false)
-        if (prevIndex != null) {
-            _currentStepIndex.value = prevIndex
-            emitNavigationForStep(prevIndex)
-        }
-        // If no previous exists, stay on current step.
+        findNextValidIndex(_currentStepIndex.value - 1, false)?.let(::moveTo)
     }
 
     fun requestSkip() {
-        _showSkipConfirm.value = true
+        if (_isTourActive.value) _showSkipConfirm.value = true
     }
 
     fun cancelSkip() {
         _showSkipConfirm.value = false
     }
 
-    fun confirmSkip() {
-        _showSkipConfirm.value = false
-        markCompleteAndClose()
-    }
+    fun confirmSkip() = finish()
 
     fun finish() {
-        markCompleteAndClose()
-    }
-
-    /** Acknowledge that the host has performed the navigation. */
-    fun consumeNavigation() {
-        _pendingNavigation.value = null
-    }
-
-    /**
-     * Check whether the current step's target is available. Steps with an empty targetKey (welcome
-     * / finish overlays) are always available.
-     */
-    fun isCurrentTargetAvailable(): Boolean {
-        val step = steps.getOrNull(_currentStepIndex.value) ?: return false
-        if (step.targetKey.isEmpty()) return true
-        return registry.boundsFor(step.targetKey) != null
-    }
-
-    /**
-     * Called by the overlay when a target never appeared. Continues in the direction the user was
-     * travelling, so pressing Back onto a missing target does not bounce straight forward again.
-     */
-    fun skipUnavailableTarget() {
-        val current = _currentStepIndex.value
-        val index =
-            if (movingForward) findNextValidIndex(current + 1, forward = true)
-            else
-                findNextValidIndex(current - 1, forward = false)
-                    ?: findNextValidIndex(current + 1, forward = true)
-        if (index == null) {
-            finish()
-            return
-        }
-        _currentStepIndex.value = index
-        emitNavigationForStep(index)
-    }
-
-    // ---- internals ----
-
-    private fun markCompleteAndClose() {
+        if (!_isTourActive.value) return
         _isTourActive.value = false
+        _currentStep.value = null
+        _pendingNavigation.value = null
+        _showSkipConfirm.value = false
         _currentStepIndex.value = 0
         scope.launch { prefs.setCompleted(true) }
     }
 
-    /**
-     * Starting from [fromIndex], walk in [forward] direction and return the first step whose target
-     * is available or whose targetKey is empty (full-screen overlays are always valid). Stops at
-     * list boundaries.
-     */
-    private fun findNextValidIndex(fromIndex: Int, forward: Boolean): Int? {
-        val range = if (forward) fromIndex until steps.size else fromIndex downTo 0
-        // Targets need not be measured yet (the screen may still be navigating; the overlay waits
-        // for them). Only steps the host says cannot apply are passed over, and never shown.
-        return range.firstOrNull { it in steps.indices && isStepAvailable(steps[it]) }
+    /** Ignore late acknowledgements from a navigation that a newer step already replaced. */
+    fun consumeNavigation(request: NavigationRequest) {
+        if (_pendingNavigation.value == request) _pendingNavigation.value = null
     }
 
-    private fun emitNavigationForStep(index: Int) {
-        val step = steps.getOrNull(index) ?: return
-        _pendingNavigation.value = NavigationRequest(step.screenRoute)
+    fun isCurrentTargetAvailable(): Boolean {
+        val step = _currentStep.value ?: return false
+        return step.targetKey.isEmpty() || registry.boundsFor(step.targetKey) != null
+    }
+
+    /** Missing targets are omitted for the rest of this run, including when going Back. */
+    fun skipUnavailableTarget() {
+        if (!_isTourActive.value || _showSkipConfirm.value) return
+        val current = _currentStepIndex.value
+        unavailableTargets += steps[current].id
+        refreshProgress()
+        val index =
+            if (movingForward) findNextValidIndex(current + 1, true)
+            else findNextValidIndex(current - 1, false) ?: findNextValidIndex(current + 1, true)
+        if (index == null) finish() else moveTo(index)
+    }
+
+    private fun isAvailable(step: TutorialStep): Boolean =
+        (!step.needsDoctor || hasDoctors) &&
+            (!step.needsTask || hasTasks) &&
+            step.id !in unavailableTargets
+
+    private fun availableIndices() = steps.indices.filter { isAvailable(steps[it]) }
+
+    private fun refreshProgress() {
+        val available = availableIndices()
+        _totalSteps.value = available.size
+        _visibleStepIndex.value = available.indexOf(_currentStepIndex.value).coerceAtLeast(0)
+    }
+
+    private fun findNextValidIndex(fromIndex: Int, forward: Boolean): Int? {
+        val range = if (forward) fromIndex until steps.size else fromIndex downTo 0
+        return range.firstOrNull { it in steps.indices && isAvailable(steps[it]) }
+    }
+
+    private fun moveTo(index: Int) {
+        val step = steps[index]
+        _currentStepIndex.value = index
+        _currentStep.value = step
+        refreshProgress()
+        _pendingNavigation.value = NavigationRequest(step.screenRoute, step.id)
     }
 }

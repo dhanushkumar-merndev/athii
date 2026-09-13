@@ -56,13 +56,13 @@ class TutorialTargetRegistry {
 @Composable
 fun Modifier.tutorialTarget(key: String, registry: TutorialTargetRegistry): Modifier {
     val owner = remember { Any() }
-    DisposableEffect(key) { onDispose { registry.unregister(key, owner) } }
+    DisposableEffect(key, registry) { onDispose { registry.unregister(key, owner) } }
     return this.onGloballyPositioned { coordinates ->
         try {
             val bounds = coordinates.boundsInWindow()
             if (bounds.width > 0f && bounds.height > 0f) {
                 registry.register(key, bounds, owner)
-            }
+            } else registry.unregister(key, owner)
         } catch (_: Exception) {
             // Layout may not be attached yet; ignore.
         }

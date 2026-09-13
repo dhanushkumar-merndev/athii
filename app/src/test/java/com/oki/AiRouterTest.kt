@@ -127,14 +127,14 @@ class AiRouterTest {
 
     @Test
     fun allModelsFailCleanly() = runTest {
-        val fake = Fake(mutableListOf(ApiFailure(503), ApiFailure(503), ApiFailure(503)))
+        val fake = Fake(GROQ_MODELS.map { ApiFailure(503) as Any }.toMutableList())
         val failure =
             runCatching { AiRouter(fake).complete(messages, messages) }.exceptionOrNull()!!
         assertEquals(
             "AI service temporarily unavailable. Please try again.",
             friendlyError(failure),
         )
-        assertEquals(3, fake.calls.size)
+        assertEquals(GROQ_MODELS.size, fake.calls.size)
     }
 
     @Test
@@ -160,15 +160,14 @@ class AiRouterTest {
 
     @Test
     fun rateLimitReportedOnlyAfterAllModelsExhausted() = runTest {
-        val fake =
-            Fake(mutableListOf(ApiFailure(429, 5000), ApiFailure(429, 5000), ApiFailure(429, 5000)))
+        val fake = Fake(GROQ_MODELS.map { ApiFailure(429, 5000) as Any }.toMutableList())
         val failure =
             runCatching { AiRouter(fake).complete(messages, messages) }.exceptionOrNull()!!
         assertEquals(
             "AI quota or rate limit reached. Please try again later.",
             friendlyError(failure),
         )
-        assertEquals(3, fake.calls.size)
+        assertEquals(GROQ_MODELS.size, fake.calls.size)
     }
 
     @Test
